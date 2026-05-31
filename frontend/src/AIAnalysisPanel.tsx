@@ -16,6 +16,7 @@ const SENTIMENT_STYLE: Record<string, { bg: string; color: string }> = {
 
 interface Action { text: string; assignee: string | null; due: string | null; }
 interface McpResult { server: string; action: string; result: string; }
+interface Chapter { title: string; start_ms: number; summary: string; }
 export interface Analysis {
   status: "running" | "completed" | "error";
   provider: string; template: string;
@@ -23,6 +24,7 @@ export interface Analysis {
   topics: string[];
   sentiment_per_speaker: Record<string, string>;
   suggested_speaker_names: Record<string, string>;
+  chapters: Chapter[];
   mcp_results: McpResult[];
   error: string | null; created_at: string | null;
 }
@@ -86,7 +88,7 @@ export default function AIAnalysisPanel({ jobId, existingAnalysis, speakerNames 
         body: JSON.stringify({ provider, api_key: apiKey || undefined, mcp_servers: selectedServers, template }),
       });
       if (!resp.ok) { const d = await resp.json().catch(() => ({ detail: resp.statusText })); throw new Error(d.detail); }
-      setAnalysis({ status: "running", provider, template, summary: "", decisions: [], actions: [], topics: [], sentiment_per_speaker: {}, suggested_speaker_names: {}, mcp_results: [], error: null, created_at: null });
+      setAnalysis({ status: "running", provider, template, summary: "", decisions: [], actions: [], topics: [], sentiment_per_speaker: {}, suggested_speaker_names: {}, chapters: [], mcp_results: [], error: null, created_at: null });
     } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setLoading(false); }
   };
@@ -200,6 +202,24 @@ export default function AIAnalysisPanel({ jobId, existingAnalysis, speakerNames 
               )}
 
               {/* MCP */}
+              {/* Chapitres */}
+              {analysis.chapters?.length > 0 && (
+                <div style={{ marginBottom: "1rem" }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#555", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Chapitres</div>
+                  {analysis.chapters.map((ch, i) => (
+                    <div key={i} style={{ display: "flex", gap: 10, padding: "8px 10px", background: "#f9f9f9", borderRadius: 6, marginBottom: 4, borderLeft: "3px solid #aaa" }}>
+                      <div style={{ fontSize: 11, fontFamily: "monospace", color: "#888", flexShrink: 0, paddingTop: 2 }}>
+                        {String(Math.floor(ch.start_ms / 60000)).padStart(2, "0")}:{String(Math.floor((ch.start_ms % 60000) / 1000)).padStart(2, "0")}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#333" }}>{ch.title}</div>
+                        <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>{ch.summary}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {analysis.mcp_results.length > 0 && (
                 <div style={{ marginBottom: "1rem" }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: "#555", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Actions MCP</div>

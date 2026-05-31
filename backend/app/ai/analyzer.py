@@ -31,6 +31,7 @@ async def run_analysis(
         "topics": [],
         "sentiment_per_speaker": {},
         "suggested_speaker_names": {},
+        "chapters": [],
         "mcp_results": [],
         "error": None,
         "created_at": datetime.utcnow().isoformat(),
@@ -68,6 +69,7 @@ async def run_analysis(
             "topics": result.topics,
             "sentiment_per_speaker": result.sentiment_per_speaker,
             "suggested_speaker_names": result.suggested_speaker_names,
+            "chapters": result.chapters,
             "mcp_results": result.mcp_results,
         })
         log.info("analysis completed", extra={"job_id": job_id, "provider": provider_name})

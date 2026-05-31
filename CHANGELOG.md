@@ -5,6 +5,16 @@ Format : [Semantic Versioning](https://semver.org/lang/fr/) — `MAJOR.MINOR.PAT
 
 ---
 
+## [0.5.0] — 2026-05-31
+
+### Ajouté
+- **Édition manuelle de segments** — double-clic sur un segment pour corriger le texte ; badge `✏` indique les segments modifiés ; `PATCH /api/transcribe/{id}/segments`
+- **Commentaires par segment** — icône 💬 au survol → saisie inline ; commentaire affiché sous le texte ; modifiable
+- **Export DOCX** — bouton `↓ DOCX` dans la barre d'export ; document Word stylisé avec couleurs par locuteur et sections d'analyse
+- **Chapitrage automatique IA** — l'IA découpe la réunion en chapitres (`title`, `start_ms`, `summary`) ; affichés dans le panneau Analyse avec horodatage
+
+---
+
 ## [0.4.0] — 2026-05-31
 
 ### Ajouté

@@ -90,7 +90,20 @@ ANALYSIS_TOOL_SCHEMA = {
                 "description": "Noms ou rôles suggérés par locuteur déduits du contenu (clé = SPEAKER_XX, valeur = prénom/rôle).",
                 "additionalProperties": {"type": "string"},
             },
+            "chapters": {
+                "type": "array",
+                "description": "Chapitres identifiés dans la réunion, ordonnés chronologiquement.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Titre court du chapitre."},
+                        "start_ms": {"type": "integer", "description": "Début du chapitre en millisecondes."},
+                        "summary": {"type": "string", "description": "Résumé du chapitre (1-2 phrases)."},
+                    },
+                    "required": ["title", "start_ms", "summary"],
+                },
+            },
         },
-        "required": ["summary", "decisions", "actions", "topics", "sentiment_per_speaker", "suggested_speaker_names"],
+        "required": ["summary", "decisions", "actions", "topics", "sentiment_per_speaker", "suggested_speaker_names", "chapters"],
     },
 }

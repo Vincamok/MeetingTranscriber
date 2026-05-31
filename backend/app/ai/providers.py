@@ -21,6 +21,7 @@ class AnalysisResult:
     topics: list[str] = field(default_factory=list)
     sentiment_per_speaker: dict[str, str] = field(default_factory=dict)
     suggested_speaker_names: dict[str, str] = field(default_factory=dict)
+    chapters: list[dict] = field(default_factory=list)
     mcp_results: list[dict] = field(default_factory=list)
 
 
@@ -90,6 +91,7 @@ class AnthropicProvider(BaseProvider):
                     result.topics = inp.get("topics", [])
                     result.sentiment_per_speaker = inp.get("sentiment_per_speaker", {})
                     result.suggested_speaker_names = inp.get("suggested_speaker_names", {})
+                    result.chapters = inp.get("chapters", [])
                     tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": "OK"})
                 elif block.name in mcp_meta:
                     meta = mcp_meta[block.name]
@@ -164,6 +166,7 @@ class OpenAIProvider(BaseProvider):
                     result.topics = inp.get("topics", [])
                     result.sentiment_per_speaker = inp.get("sentiment_per_speaker", {})
                     result.suggested_speaker_names = inp.get("suggested_speaker_names", {})
+                    result.chapters = inp.get("chapters", [])
                     tool_msgs.append({"role": "tool", "tool_call_id": tc.id, "content": "OK"})
                 elif tc.function.name in mcp_meta:
                     meta = mcp_meta[tc.function.name]

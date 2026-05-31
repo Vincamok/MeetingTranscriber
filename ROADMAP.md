@@ -24,18 +24,12 @@
 - [x] Analyse étendue : topics, sentiment, suggestion de noms
 - [x] Langue auto-détectée + sélecteur UI
 
-## [0.5.0] — Qualité & édition
+## [0.5.0] — Qualité & édition ✅ (livré)
 
-- [ ] **Édition manuelle** — corriger le texte d'un segment directement dans l'interface
-- [ ] **Commentaires par segment** — annoter un passage (comme Notion)
-
----
-
-## [0.5.0] — Intelligence avancée
-
-- [ ] **Détection de langue automatique** — laisser Whisper détecter la langue sans forcer `fr`
-- [ ] **Chapitrage automatique** — découper la transcription en thèmes/sections via IA
-- [ ] **Templates de prompt** — choisir le type d'analyse (réunion projet, entretien, support client…)
+- [x] **Édition manuelle** — corriger le texte d'un segment directement dans l'interface
+- [x] **Commentaires par segment** — annoter un passage (comme Notion)
+- [x] **Export DOCX** — Word stylisé avec analyse intégrée
+- [x] **Chapitrage automatique IA** — titre + timestamp + résumé par chapitre
 
 ---
 

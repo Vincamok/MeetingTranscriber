@@ -10,9 +10,10 @@ Endpoints :
   POST /api/upload                          → upload audio/vidéo + lancement
   GET  /api/transcribe/{id}                 → statut / résultat
   GET  /api/transcribe/{id}/audio           → stream audio pour le player
-  GET  /api/transcribe/{id}/export          → export TXT | SRT | JSON
+  GET  /api/transcribe/{id}/export          → export TXT | SRT | JSON | DOCX
   POST /api/transcribe/{id}/analyze         → déclenche l'analyse IA
   PATCH /api/transcribe/{id}/speakers       → renommer les locuteurs
+  PATCH /api/transcribe/{id}/segments       → éditer le texte / commentaires des segments
   POST /api/transcribe/{id}/share           → créer un lien de partage
   GET  /api/share/{token}                   → vue publique d'une transcription
   GET  /api/transcripts                     → liste tous les jobs
@@ -34,7 +35,7 @@ from typing import Literal, Optional
 import aiofiles
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel as PydanticModel
 from pythonjsonlogger import jsonlogger
 
@@ -331,10 +332,118 @@ def _run_pipeline(job_id: str, raw_path: Path, language: str):
 
 
 # ---------------------------------------------------------------------------
+# Export DOCX
+# ---------------------------------------------------------------------------
+
+def _export_docx(job: dict, utterances: list, speaker_names: dict, analysis: Optional[dict]):
+    import io
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError:
+        raise HTTPException(status_code=501, detail="python-docx non installé")
+
+    COLORS = [
+        RGBColor(0x0C, 0x44, 0x7C),
+        RGBColor(0x3B, 0x6D, 0x11),
+        RGBColor(0x85, 0x4F, 0x0B),
+        RGBColor(0x72, 0x24, 0x3E),
+        RGBColor(0x3C, 0x34, 0x89),
+    ]
+    speakers = job.get("speakers", [])
+    spk_idx = {s: i for i, s in enumerate(speakers)}
+
+    doc = Document()
+    doc.core_properties.title = job.get("filename", "Transcription Minta")
+
+    # Titre
+    title = doc.add_heading("Transcription — Minta", 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # Métadonnées
+    meta = doc.add_paragraph()
+    meta.add_run(f"Fichier : {job.get('filename', '—')}   |   ")
+    meta.add_run(f"Langue : {job.get('language', '—')}   |   ")
+    meta.add_run(f"Date : {(job.get('completed_at') or '')[:10]}")
+    meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph()
+
+    # Résumé IA
+    if analysis and analysis.get("status") == "completed":
+        if analysis.get("summary"):
+            doc.add_heading("Résumé", 1)
+            doc.add_paragraph(analysis["summary"])
+        if analysis.get("topics"):
+            doc.add_heading("Sujets", 2)
+            doc.add_paragraph("  •  ".join(analysis["topics"]))
+        if analysis.get("decisions"):
+            doc.add_heading("Décisions", 2)
+            for d in analysis["decisions"]:
+                p = doc.add_paragraph(style="List Bullet")
+                p.add_run(d)
+        if analysis.get("actions"):
+            doc.add_heading("Actions", 2)
+            for a in analysis["actions"]:
+                text = a["text"]
+                if a.get("assignee"): text += f" (@{a['assignee']})"
+                if a.get("due"): text += f" [échéance: {a['due']}]"
+                p = doc.add_paragraph(style="List Bullet")
+                p.add_run(text)
+        if analysis.get("chapters"):
+            doc.add_heading("Chapitres", 2)
+            for ch in analysis["chapters"]:
+                p = doc.add_paragraph()
+                run = p.add_run(f"[{_srt_ts(ch.get('start_ms', 0))[:5]}]  {ch['title']}")
+                run.bold = True
+                if ch.get("summary"):
+                    doc.add_paragraph(ch["summary"])
+        doc.add_paragraph()
+
+    # Transcription
+    doc.add_heading("Transcription", 1)
+    prev_speaker = None
+    for u in utterances:
+        spk = u["speaker"]
+        name = speaker_names.get(spk, spk)
+        color = COLORS[spk_idx.get(spk, 0) % len(COLORS)]
+        ts = _srt_ts(u["start"])[:8]
+
+        if spk != prev_speaker:
+            p = doc.add_paragraph()
+            run = p.add_run(f"{name}  —  {ts}")
+            run.bold = True
+            run.font.color.rgb = color
+            run.font.size = Pt(10)
+            prev_speaker = spk
+
+        p = doc.add_paragraph(u["text"])
+        p.paragraph_format.left_indent = Pt(18)
+        if u.get("comment"):
+            note = doc.add_paragraph(f"  💬 {u['comment']}")
+            note.paragraph_format.left_indent = Pt(24)
+            run = note.runs[0]
+            run.italic = True
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    filename = job.get("filename", job["id"])
+    filename = Path(filename).stem + ".docx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
 # App FastAPI
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Minta API", version="0.4.0")
+app = FastAPI(title="Minta API", version="0.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -427,13 +536,14 @@ def get_audio(job_id: str):
 
 
 @app.get("/api/transcribe/{job_id}/export")
-def export_job(job_id: str, format: Literal["txt", "srt", "json"] = Query("txt")):
+def export_job(job_id: str, format: Literal["txt", "srt", "json", "docx"] = Query("txt")):
     job = _load_job(job_id)
     if job["status"] != "completed":
         raise HTTPException(status_code=409, detail="Transcription non terminée")
 
     utterances = job.get("utterances", [])
     speaker_names: dict = job.get("speaker_names", {})
+    analysis = job.get("analysis")
 
     def spk_label(spk: str) -> str:
         return speaker_names.get(spk, spk)
@@ -442,7 +552,23 @@ def export_job(job_id: str, format: Literal["txt", "srt", "json"] = Query("txt")
         return job
 
     if format == "txt":
-        lines = [f"[{spk_label(u['speaker'])}] {u['text']}" for u in utterances]
+        lines = []
+        if analysis and analysis.get("status") == "completed":
+            if analysis.get("summary"):
+                lines += ["=== RÉSUMÉ ===", analysis["summary"], ""]
+            if analysis.get("decisions"):
+                lines += ["=== DÉCISIONS ==="] + [f"• {d}" for d in analysis["decisions"]] + [""]
+            if analysis.get("actions"):
+                lines += ["=== ACTIONS ==="] + [
+                    f"• {a['text']}" + (f" (@{a['assignee']})" if a.get("assignee") else "") +
+                    (f" [échéance: {a['due']}]" if a.get("due") else "")
+                    for a in analysis["actions"]
+                ] + [""]
+            lines.append("=== TRANSCRIPTION ===")
+        for u in utterances:
+            ts = _srt_ts(u["start"]).replace(",", ".").rsplit(".", 1)[0]
+            comment = f"  [{u['comment']}]" if u.get("comment") else ""
+            lines.append(f"[{ts}] [{spk_label(u['speaker'])}] {u['text']}{comment}")
         content = "\n".join(lines)
         return PlainTextResponse(content, media_type="text/plain; charset=utf-8",
                                  headers={"Content-Disposition": f'attachment; filename="{job_id}.txt"'})
@@ -453,6 +579,9 @@ def export_job(job_id: str, format: Literal["txt", "srt", "json"] = Query("txt")
             blocks.append(f"{i}\n{_srt_ts(u['start'])} --> {_srt_ts(u['end'])}\n[{spk_label(u['speaker'])}] {u['text']}\n")
         return PlainTextResponse("\n".join(blocks), media_type="text/plain; charset=utf-8",
                                  headers={"Content-Disposition": f'attachment; filename="{job_id}.srt"'})
+
+    if format == "docx":
+        return _export_docx(job, utterances, speaker_names, analysis)
 
 
 class SpeakerNamesUpdate(PydanticModel):
@@ -465,6 +594,35 @@ def update_speaker_names(job_id: str, body: SpeakerNamesUpdate):
     job["speaker_names"] = {**job.get("speaker_names", {}), **body.speaker_names}
     _save_job(job)
     return {"speaker_names": job["speaker_names"]}
+
+
+class SegmentPatch(PydanticModel):
+    index: int
+    text: Optional[str] = None
+    comment: Optional[str] = None
+
+
+class SegmentsPatch(PydanticModel):
+    segments: list[SegmentPatch]
+
+
+@app.patch("/api/transcribe/{job_id}/segments")
+def patch_segments(job_id: str, body: SegmentsPatch):
+    """Édite le texte et/ou le commentaire d'un ou plusieurs segments."""
+    job = _load_job(job_id)
+    utterances = job.get("utterances", [])
+    for patch in body.segments:
+        if 0 <= patch.index < len(utterances):
+            if patch.text is not None:
+                utterances[patch.index]["text"] = patch.text
+                utterances[patch.index]["edited"] = True
+            if patch.comment is not None:
+                utterances[patch.index]["comment"] = patch.comment
+    job["utterances"] = utterances
+    # Recalculer le texte complet
+    job["text"] = " ".join(u["text"] for u in utterances)
+    _save_job(job)
+    return {"utterances": utterances}
 
 
 @app.post("/api/transcribe/{job_id}/share")

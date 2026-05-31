@@ -24,7 +24,7 @@ const LANGUAGES = [
 const ACCEPT = "audio/*,video/mp4,video/x-matroska,video/avi,video/quicktime,video/x-msvideo,.mkv,.avi,.mov,.mp4,.m4v";
 
 interface Word { text: string; start: number; end: number; }
-interface Utterance { speaker: string; start: number; end: number; text: string; words: Word[]; }
+interface Utterance { speaker: string; start: number; end: number; text: string; words: Word[]; comment?: string; edited?: boolean; }
 interface Analysis {
   status: "running" | "completed" | "error";
   provider: string; template: string;
@@ -33,6 +33,7 @@ interface Analysis {
   topics: string[];
   sentiment_per_speaker: Record<string, string>;
   suggested_speaker_names: Record<string, string>;
+  chapters: { title: string; start_ms: number; summary: string }[];
   mcp_results: { server: string; action: string; result: string }[];
   error: string | null; created_at: string | null;
 }
@@ -72,6 +73,10 @@ export default function MeetingTranscriber() {
   const [editingName, setEditingName] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [sharing, setSharing] = useState(false);
+  const [editingSegment, setEditingSegment] = useState<number | null>(null);
+  const [editSegmentValue, setEditSegmentValue] = useState("");
+  const [commentingSegment, setCommentingSegment] = useState<number | null>(null);
+  const [commentValue, setCommentValue] = useState("");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -221,7 +226,7 @@ export default function MeetingTranscriber() {
     }
   };
 
-  const exportTranscript = async (format: "txt" | "srt" | "json") => {
+  const exportTranscript = async (format: "txt" | "srt" | "json" | "docx") => {
     if (!job) return;
     const resp = await fetch(`/api/transcribe/${job.id}/export?format=${format}`);
     if (!resp.ok) return;
@@ -242,6 +247,38 @@ export default function MeetingTranscriber() {
     });
     setJob({ ...job, speaker_names: newNames });
     setEditingName(null);
+  };
+
+  const saveSegmentEdit = async (idx: number) => {
+    if (!job) return;
+    await fetch(`/api/transcribe/${job.id}/segments`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ segments: [{ index: idx, text: editSegmentValue }] }),
+    });
+    setJob((j) => {
+      if (!j) return j;
+      const u = [...j.utterances];
+      u[idx] = { ...u[idx], text: editSegmentValue, edited: true };
+      return { ...j, utterances: u };
+    });
+    setEditingSegment(null);
+  };
+
+  const saveComment = async (idx: number) => {
+    if (!job) return;
+    await fetch(`/api/transcribe/${job.id}/segments`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ segments: [{ index: idx, comment: commentValue }] }),
+    });
+    setJob((j) => {
+      if (!j) return j;
+      const u = [...j.utterances];
+      u[idx] = { ...u[idx], comment: commentValue };
+      return { ...j, utterances: u };
+    });
+    setCommentingSegment(null);
   };
 
   const createShare = async () => {
@@ -343,7 +380,7 @@ export default function MeetingTranscriber() {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             {utterances.length > 0 && (
               <>
-                {(["txt", "srt", "json"] as const).map((fmt) => (
+                {(["txt", "srt", "json", "docx"] as const).map((fmt) => (
                   <button key={fmt} onClick={() => exportTranscript(fmt)}
                     style={{ padding: "3px 10px", fontSize: 11, borderRadius: 6, border: "0.5px solid #bbb", background: "transparent", cursor: "pointer" }}>
                     ↓ {fmt.toUpperCase()}
@@ -413,14 +450,19 @@ export default function MeetingTranscriber() {
               const color = SPEAKER_COLORS[si % SPEAKER_COLORS.length];
               const isActive = currentMs >= u.start && currentMs < u.end;
               const displayName = speakerNames[u.speaker] ?? `Locuteur ${String.fromCharCode(65 + si)}`;
+              const isEditingSeg = editingSegment === idx;
+              const isCommentingSeg = commentingSegment === idx;
               return (
                 <div key={idx}
-                  onClick={() => seekTo(u.start)}
-                  style={{ display: "flex", gap: 12, padding: "10px 12px", borderRadius: 8, cursor: "pointer",
+                  style={{ display: "flex", gap: 12, padding: "10px 12px", borderRadius: 8,
                     background: isActive ? "#fffde7" : "transparent",
-                    outline: isActive ? "1.5px solid #FFD54F" : "none" }}>
+                    outline: isActive ? "1.5px solid #FFD54F" : "none",
+                    position: "relative" }}
+                  onMouseEnter={(e) => { (e.currentTarget.querySelector(".seg-actions") as HTMLElement | null)?.style && ((e.currentTarget.querySelector(".seg-actions") as HTMLElement).style.opacity = "1"); }}
+                  onMouseLeave={(e) => { (e.currentTarget.querySelector(".seg-actions") as HTMLElement | null)?.style && ((e.currentTarget.querySelector(".seg-actions") as HTMLElement).style.opacity = "0"); }}>
                   <div style={{ flexShrink: 0, width: 90 }}>
-                    <div style={{ fontSize: 11, fontFamily: "monospace", color: "#888", marginBottom: 4 }}>{fmtMs(u.start)}</div>
+                    <div style={{ fontSize: 11, fontFamily: "monospace", color: "#888", marginBottom: 4, cursor: "pointer" }}
+                      onClick={() => seekTo(u.start)}>{fmtMs(u.start)}</div>
                     {editingName === u.speaker ? (
                       <div style={{ display: "flex", gap: 4 }}>
                         <input value={editValue} onChange={(e) => setEditValue(e.target.value)}
@@ -437,7 +479,60 @@ export default function MeetingTranscriber() {
                       </span>
                     )}
                   </div>
-                  <div style={{ fontSize: 14, color: "#333", lineHeight: 1.6, flex: 1 }}>{u.text}</div>
+                  <div style={{ fontSize: 14, color: "#333", lineHeight: 1.6, flex: 1 }}>
+                    {isEditingSeg ? (
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <textarea value={editSegmentValue} onChange={(e) => setEditSegmentValue(e.target.value)}
+                          style={{ width: "100%", fontSize: 14, lineHeight: 1.6, borderRadius: 6, border: "1px solid #bbb", padding: "4px 6px", resize: "vertical", fontFamily: "inherit" }}
+                          rows={3} autoFocus />
+                        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                          <button onClick={() => saveSegmentEdit(idx)}
+                            style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, border: "none", background: "#333", color: "#fff", cursor: "pointer" }}>✓ Enregistrer</button>
+                          <button onClick={() => setEditingSegment(null)}
+                            style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, border: "0.5px solid #bbb", background: "transparent", cursor: "pointer" }}>Annuler</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <span onDoubleClick={(e) => { e.stopPropagation(); setEditingSegment(idx); setEditSegmentValue(u.text); }}
+                        title="Double-clic pour modifier"
+                        style={{ cursor: "text" }}>
+                        {u.text}
+                        {u.edited && <span style={{ fontSize: 10, color: "#aaa", marginLeft: 6 }}>✏</span>}
+                      </span>
+                    )}
+                    {isCommentingSeg ? (
+                      <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 6 }}>
+                        <textarea value={commentValue} onChange={(e) => setCommentValue(e.target.value)}
+                          placeholder="Ajouter un commentaire..."
+                          style={{ width: "100%", fontSize: 12, borderRadius: 6, border: "1px solid #bbb", padding: "4px 6px", resize: "vertical", fontFamily: "inherit" }}
+                          rows={2} autoFocus />
+                        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                          <button onClick={() => saveComment(idx)}
+                            style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, border: "none", background: "#333", color: "#fff", cursor: "pointer" }}>💬 Sauvegarder</button>
+                          <button onClick={() => setCommentingSegment(null)}
+                            style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, border: "0.5px solid #bbb", background: "transparent", cursor: "pointer" }}>Annuler</button>
+                        </div>
+                      </div>
+                    ) : u.comment ? (
+                      <div style={{ fontSize: 12, color: "#888", fontStyle: "italic", marginTop: 4, borderLeft: "2px solid #ddd", paddingLeft: 8 }}
+                        onClick={(e) => { e.stopPropagation(); setCommentingSegment(idx); setCommentValue(u.comment ?? ""); }}>
+                        💬 {u.comment}
+                      </div>
+                    ) : null}
+                  </div>
+                  {/* Hover actions */}
+                  <div className="seg-actions" style={{ position: "absolute", top: 8, right: 8, opacity: 0, transition: "opacity 0.15s", display: "flex", gap: 4 }}>
+                    {!isEditingSeg && (
+                      <button onClick={(e) => { e.stopPropagation(); setEditingSegment(idx); setEditSegmentValue(u.text); }}
+                        title="Modifier le texte"
+                        style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, border: "0.5px solid #ccc", background: "#fff", cursor: "pointer" }}>✏</button>
+                    )}
+                    {!isCommentingSeg && (
+                      <button onClick={(e) => { e.stopPropagation(); setCommentingSegment(idx); setCommentValue(u.comment ?? ""); }}
+                        title="Ajouter un commentaire"
+                        style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, border: "0.5px solid #ccc", background: "#fff", cursor: "pointer" }}>💬</button>
+                    )}
+                  </div>
                 </div>
               );
             })}
