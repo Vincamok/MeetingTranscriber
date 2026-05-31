@@ -81,12 +81,15 @@ JWT_EXPIRE_HOURS = 24
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 def _hash_password(pwd: str) -> str:
-    from passlib.context import CryptContext
-    return CryptContext(schemes=["bcrypt"], deprecated="auto").hash(pwd)
+    import bcrypt as _bcrypt
+    return _bcrypt.hashpw(pwd.encode(), _bcrypt.gensalt()).decode()
 
 def _verify_password(plain: str, hashed: str) -> bool:
-    from passlib.context import CryptContext
-    return CryptContext(schemes=["bcrypt"], deprecated="auto").verify(plain, hashed)
+    import bcrypt as _bcrypt
+    try:
+        return _bcrypt.checkpw(plain.encode(), hashed.encode())
+    except Exception:
+        return False
 
 def _create_token(username: str) -> str:
     from jose import jwt
@@ -555,7 +558,7 @@ def health():
     return {
         "status": "ok",
         "app": "Minta",
-        "version": "0.6.0",
+        "version": "0.8.0",
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
         "whisper_model": WHISPER_MODEL,
