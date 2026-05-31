@@ -282,6 +282,42 @@ def _fire_webhook(webhook_url: str, job: dict):
 
 
 # ---------------------------------------------------------------------------
+# Auto-analyse IA post-transcription
+# ---------------------------------------------------------------------------
+
+def _trigger_auto_analyze(job: dict, settings: dict):
+    """Lance l'analyse IA dans un thread séparé après la transcription."""
+    import asyncio, threading
+    from .ai.analyzer import run_analysis
+
+    provider = settings.get("default_provider", "anthropic")
+    api_key = ANTHROPIC_API_KEY if provider == "anthropic" else OPENAI_API_KEY
+    if not api_key:
+        log.warning("auto_analyze: clé API absente, analyse ignorée", extra={"provider": provider})
+        return
+    template = settings.get("auto_analyze_template", "meeting")
+
+    def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(run_analysis(
+                job=job,
+                save_job_fn=_save_job,
+                provider_name=provider,
+                api_key=api_key,
+                mcp_servers_config=settings.get("mcp_servers", {}),
+                active_server_names=[],
+                template=template,
+            ))
+        finally:
+            loop.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    log.info("auto_analyze triggered", extra={"job_id": job["id"], "provider": provider})
+
+
+# ---------------------------------------------------------------------------
 # Pipeline transcription
 # ---------------------------------------------------------------------------
 
@@ -382,10 +418,12 @@ def _run_pipeline(job_id: str, raw_path: Path, language: str):
         except Exception:
             pass
 
-        # Webhook
+        # Webhook + Auto-analyse
         settings = _load_settings()
         if wh := settings.get("webhook_url"):
             _fire_webhook(wh, job)
+        if job.get("status") == "completed" and settings.get("auto_analyze"):
+            _trigger_auto_analyze(job, settings)
 
 
 # ---------------------------------------------------------------------------
@@ -727,7 +765,36 @@ def get_shared(token: str):
 
 
 @app.get("/api/transcripts")
-def list_transcripts(_: str = Depends(require_auth)):
+def list_transcripts(
+    q: Optional[str] = Query(None, description="Recherche full-text dans les transcriptions"),
+    tag: Optional[str] = Query(None, description="Filtrer par tag"),
+    _: str = Depends(require_auth),
+):
+    jobs = _list_jobs()
+
+    if q:
+        needle = q.lower()
+        def _matches(j: dict) -> bool:
+            if needle in (j.get("filename") or "").lower():
+                return True
+            if needle in j.get("text", "").lower():
+                return True
+            names = " ".join(j.get("speaker_names", {}).values()).lower()
+            if needle in names:
+                return True
+            analysis = j.get("analysis") or {}
+            if needle in analysis.get("summary", "").lower():
+                return True
+            if any(needle in d.lower() for d in analysis.get("decisions", [])):
+                return True
+            if any(needle in t.lower() for t in analysis.get("topics", [])):
+                return True
+            return False
+        jobs = [j for j in jobs if _matches(j)]
+
+    if tag:
+        jobs = [j for j in jobs if tag in j.get("tags", [])]
+
     return [
         {
             "id": j["id"],
@@ -743,10 +810,23 @@ def list_transcripts(_: str = Depends(require_auth)):
             "error": j.get("error"),
             "has_audio": j.get("has_audio", False),
             "share_token": j.get("share_token"),
+            "tags": j.get("tags", []),
             "analysis_status": j.get("analysis", {}).get("status") if j.get("analysis") else None,
         }
-        for j in _list_jobs()
+        for j in jobs
     ]
+
+
+class TagsUpdate(PydanticModel):
+    tags: list[str]
+
+
+@app.patch("/api/transcribe/{job_id}/tags")
+def update_tags(job_id: str, body: TagsUpdate, _: str = Depends(require_auth)):
+    job = _load_job(job_id)
+    job["tags"] = [t.strip() for t in body.tags if t.strip()]
+    _save_job(job)
+    return {"tags": job["tags"]}
 
 
 @app.delete("/api/transcribe/{job_id}", status_code=204)
@@ -769,6 +849,8 @@ _DEFAULT_SETTINGS: dict = {
     "mcp_servers": {},
     "default_provider": AI_DEFAULT_PROVIDER,
     "webhook_url": "",
+    "auto_analyze": False,
+    "auto_analyze_template": "meeting",
 }
 
 
@@ -799,6 +881,8 @@ class SettingsPatch(PydanticModel):
     mcp_servers: Optional[dict] = None
     default_provider: Optional[str] = None
     webhook_url: Optional[str] = None
+    auto_analyze: Optional[bool] = None
+    auto_analyze_template: Optional[str] = None
 
 
 @app.patch("/api/settings")
@@ -812,6 +896,10 @@ def patch_settings(patch: SettingsPatch, _: str = Depends(require_auth)):
         settings["default_provider"] = patch.default_provider
     if patch.webhook_url is not None:
         settings["webhook_url"] = patch.webhook_url
+    if patch.auto_analyze is not None:
+        settings["auto_analyze"] = patch.auto_analyze
+    if patch.auto_analyze_template is not None:
+        settings["auto_analyze_template"] = patch.auto_analyze_template
     _save_settings(settings)
     return settings
 

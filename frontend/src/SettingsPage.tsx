@@ -15,6 +15,8 @@ interface Settings {
   mcp_servers: Record<string, McpServerConfig>;
   default_provider: string;
   webhook_url: string;
+  auto_analyze: boolean;
+  auto_analyze_template: string;
   providers_available?: Record<string, boolean>;
 }
 
@@ -114,6 +116,8 @@ export default function SettingsPage() {
           mcp_servers: settings.mcp_servers,
           default_provider: settings.default_provider,
           webhook_url: settings.webhook_url,
+          auto_analyze: settings.auto_analyze,
+          auto_analyze_template: settings.auto_analyze_template,
         }),
       });
       if (!resp.ok) throw new Error((await resp.json()).detail);
@@ -214,6 +218,38 @@ export default function SettingsPage() {
           onChange={(e) => setSettings({ ...settings, webhook_url: e.target.value })}
           style={{ width: "100%", padding: "8px 12px", fontSize: 13, borderRadius: 8, border: "0.5px solid #ddd", boxSizing: "border-box" }}
         />
+      </section>
+
+      {/* Auto-analyse */}
+      <section style={{ background: "#fff", border: "0.5px solid #ddd", borderRadius: 12, padding: "1.25rem", marginBottom: "1rem" }}>
+        <h2 style={{ fontSize: 15, fontWeight: 500, margin: "0 0 0.5rem" }}>Analyse IA automatique</h2>
+        <p style={{ fontSize: 12, color: "#888", margin: "0 0 1rem" }}>
+          Lancer automatiquement l'analyse IA dès qu'une transcription est terminée.
+          Utilise la clé API configurée dans <code>.env</code>.
+        </p>
+        <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginBottom: "1rem" }}>
+          <input
+            type="checkbox"
+            checked={settings.auto_analyze ?? false}
+            onChange={(e) => setSettings({ ...settings, auto_analyze: e.target.checked })}
+            style={{ width: 16, height: 16, cursor: "pointer" }}
+          />
+          <span style={{ fontSize: 14 }}>Activer l'analyse automatique</span>
+        </label>
+        {settings.auto_analyze && (
+          <div>
+            <label style={{ fontSize: 12, color: "#555", display: "block", marginBottom: 4 }}>Template d'analyse</label>
+            <select
+              value={settings.auto_analyze_template ?? "meeting"}
+              onChange={(e) => setSettings({ ...settings, auto_analyze_template: e.target.value })}
+              style={{ padding: "7px 10px", fontSize: 13, borderRadius: 8, border: "0.5px solid #ddd", background: "#fafafa" }}>
+              <option value="meeting">Réunion projet</option>
+              <option value="interview">Entretien candidat</option>
+              <option value="support">Support client</option>
+              <option value="demo">Démo commerciale</option>
+            </select>
+          </div>
+        )}
       </section>
 
       {/* Serveurs MCP */}

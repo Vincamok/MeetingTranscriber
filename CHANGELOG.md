@@ -5,6 +5,15 @@ Format : [Semantic Versioning](https://semver.org/lang/fr/) — `MAJOR.MINOR.PAT
 
 ---
 
+## [0.7.0] — 2026-05-31
+
+### Ajouté
+- **Recherche full-text** — `GET /api/transcripts?q=…` cherche dans le texte, nom de fichier, noms de locuteurs, résumé IA, décisions et topics ; barre de recherche avec debounce dans l'historique
+- **Tags sur les jobs** — `PATCH /api/transcribe/{id}/tags` ; ajout/suppression inline dans l'historique ; filtre par tag avec couleurs déterministes
+- **Analyse IA automatique** — toggle dans les paramètres ; déclenche l'analyse IA dans un thread dédié à la fin de chaque transcription en utilisant la clé API `.env` ; template configurable
+
+---
+
 ## [0.6.0] — 2026-05-31
 
 ### Ajouté

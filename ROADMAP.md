@@ -41,6 +41,14 @@
 
 ---
 
+## [0.7.0] — Recherche, Tags, Auto-analyse ✅ (livré)
+
+- [x] **Recherche full-text** — barre de recherche dans l'historique, debounce, résultats instantanés
+- [x] **Tags** — étiqueter les jobs, filtre par tag avec couleurs
+- [x] **Auto-analyse IA** — option dans les paramètres, se déclenche automatiquement post-transcription
+
+---
+
 ## Non planifié
 
 - [ ] **Support vidéo** — extraire la piste audio d'un fichier MP4/MKV via ffmpeg

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "./api";
 
@@ -14,21 +14,18 @@ interface JobSummary {
   error: string | null;
   has_audio: boolean;
   share_token: string | null;
+  tags: string[];
   analysis_status: "running" | "completed" | "error" | null;
 }
 
 function fmtSec(s: number): string {
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
+  const m = Math.floor(s / 60), sec = s % 60;
   return m > 0 ? `${m}m${String(sec).padStart(2, "0")}s` : `${s}s`;
 }
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleString("fr-FR", {
-    day: "2-digit", month: "2-digit", year: "numeric",
-    hour: "2-digit", minute: "2-digit",
-  });
+  return new Date(iso).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 const STATUS_STYLE: Record<string, { bg: string; color: string; label: string }> = {
@@ -37,14 +34,32 @@ const STATUS_STYLE: Record<string, { bg: string; color: string; label: string }>
   error:      { bg: "#FCEBEB", color: "#A32D2D", label: "Erreur" },
 };
 
+const TAG_COLORS = ["#E6F1FB", "#EAF3DE", "#FAEEDA", "#FBEAF0", "#EEEDFE", "#f0f0f0"];
+
+function tagColor(tag: string): { bg: string; color: string } {
+  const idx = Math.abs([...tag].reduce((a, c) => a + c.charCodeAt(0), 0)) % TAG_COLORS.length;
+  const bg = TAG_COLORS[idx];
+  const colors = ["#0C447C", "#3B6D11", "#854F0B", "#72243E", "#3C3489", "#555"];
+  return { bg, color: colors[idx] };
+}
+
 export default function HistoryPage() {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [editingTagsId, setEditingTagsId] = useState<string | null>(null);
+  const [tagInput, setTagInput] = useState("");
+  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchJobs = async () => {
+  const fetchJobs = async (q?: string, tag?: string) => {
     try {
-      const resp = await apiFetch("/api/transcripts");
+      const params = new URLSearchParams();
+      if (q) params.set("q", q);
+      if (tag) params.set("tag", tag);
+      const url = `/api/transcripts${params.toString() ? "?" + params.toString() : ""}`;
+      const resp = await apiFetch(url);
       if (resp.ok) setJobs(await resp.json());
     } finally {
       setLoading(false);
@@ -53,12 +68,24 @@ export default function HistoryPage() {
 
   useEffect(() => {
     fetchJobs();
-    // Rafraîchissement auto si des jobs sont en cours
     const id = setInterval(() => {
-      if (jobs.some((j) => j.status === "processing")) fetchJobs();
+      if (jobs.some((j) => j.status === "processing" || j.analysis_status === "running")) {
+        fetchJobs(search || undefined, activeTag || undefined);
+      }
     }, 5000);
     return () => clearInterval(id);
   }, [jobs.length]);
+
+  const handleSearch = (val: string) => {
+    setSearch(val);
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    searchTimeout.current = setTimeout(() => fetchJobs(val || undefined, activeTag || undefined), 350);
+  };
+
+  const handleTagFilter = (tag: string | null) => {
+    setActiveTag(tag);
+    fetchJobs(search || undefined, tag || undefined);
+  };
 
   const deleteJob = async (jobId: string) => {
     if (!confirm("Supprimer cette transcription ?")) return;
@@ -75,18 +102,40 @@ export default function HistoryPage() {
     const resp = await apiFetch(`/api/transcribe/${jobId}/export?format=${format}`);
     if (!resp.ok) return;
     const blob = await resp.blob();
-    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
+    a.href = URL.createObjectURL(blob);
     a.download = `transcription-${jobId.slice(0, 8)}.${format}`;
     a.click();
-    URL.revokeObjectURL(url);
   };
+
+  const saveTags = async (jobId: string, tags: string[]) => {
+    await apiFetch(`/api/transcribe/${jobId}/tags`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags }),
+    });
+    setJobs((prev) => prev.map((j) => j.id === jobId ? { ...j, tags } : j));
+    setEditingTagsId(null);
+    setTagInput("");
+  };
+
+  const addTag = (jobId: string, currentTags: string[]) => {
+    const newTag = tagInput.trim();
+    if (!newTag || currentTags.includes(newTag)) return;
+    saveTags(jobId, [...currentTags, newTag]);
+  };
+
+  const removeTag = (jobId: string, currentTags: string[], tag: string) => {
+    saveTags(jobId, currentTags.filter((t) => t !== tag));
+  };
+
+  // Collect all unique tags across all jobs
+  const allTags = [...new Set(jobs.flatMap((j) => j.tags ?? []))];
 
   return (
     <div style={{ padding: "1.5rem 0", fontFamily: "system-ui, sans-serif", maxWidth: 720 }}>
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 500, margin: 0 }}>📂 Historique</h1>
           <p style={{ fontSize: 13, color: "#666", marginTop: 4 }}>Toutes les transcriptions</p>
@@ -96,14 +145,51 @@ export default function HistoryPage() {
         </Link>
       </div>
 
+      {/* Barre de recherche */}
+      <div style={{ position: "relative", marginBottom: "0.75rem" }}>
+        <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: "#aaa" }}>🔍</span>
+        <input
+          value={search}
+          onChange={(e) => handleSearch(e.target.value)}
+          placeholder="Rechercher dans les transcriptions…"
+          style={{ width: "100%", padding: "9px 12px 9px 34px", fontSize: 13, borderRadius: 10, border: "0.5px solid #ddd", boxSizing: "border-box", background: "#fff" }}
+        />
+        {search && (
+          <button onClick={() => handleSearch("")}
+            style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "#aaa" }}>
+            ✕
+          </button>
+        )}
+      </div>
+
+      {/* Filtres par tag */}
+      {allTags.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: "1rem" }}>
+          <button onClick={() => handleTagFilter(null)}
+            style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, border: "0.5px solid #ddd", background: activeTag === null ? "#333" : "transparent", color: activeTag === null ? "#fff" : "#555", cursor: "pointer" }}>
+            Tous
+          </button>
+          {allTags.map((tag) => {
+            const tc = tagColor(tag);
+            const isActive = activeTag === tag;
+            return (
+              <button key={tag} onClick={() => handleTagFilter(isActive ? null : tag)}
+                style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, border: `0.5px solid ${isActive ? tc.color : "#ddd"}`, background: isActive ? tc.bg : "transparent", color: isActive ? tc.color : "#555", cursor: "pointer", fontWeight: isActive ? 600 : 400 }}>
+                {tag}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {loading && (
         <div style={{ textAlign: "center", padding: "3rem", color: "#aaa", fontSize: 14 }}>Chargement…</div>
       )}
 
       {!loading && jobs.length === 0 && (
         <div style={{ textAlign: "center", padding: "3rem", color: "#aaa", fontSize: 14 }}>
-          <div style={{ fontSize: 32, marginBottom: 8 }}>🗂</div>
-          Aucune transcription pour l'instant
+          <div style={{ fontSize: 32, marginBottom: 8 }}>{search || activeTag ? "🔍" : "🗂"}</div>
+          {search || activeTag ? "Aucun résultat" : "Aucune transcription pour l'instant"}
         </div>
       )}
 
@@ -112,11 +198,13 @@ export default function HistoryPage() {
           {jobs.map((job) => {
             const st = STATUS_STYLE[job.status] ?? STATUS_STYLE.error;
             const duration = job.duration_ms ? Math.round(job.duration_ms / 1000) : 0;
+            const tags = job.tags ?? [];
+            const isEditingTags = editingTagsId === job.id;
             return (
               <div key={job.id} style={{ background: "#fff", border: "0.5px solid #ddd", borderRadius: 12, padding: "1rem 1.25rem" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-                  {/* Infos principales */}
                   <div style={{ flex: 1, minWidth: 0 }}>
+                    {/* Titre + statut */}
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
                       <span style={{ fontSize: 14, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {job.filename ?? "Enregistrement"}
@@ -141,6 +229,45 @@ export default function HistoryPage() {
                         </span>
                       </div>
                     )}
+
+                    {/* Tags */}
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+                      {tags.map((tag) => {
+                        const tc = tagColor(tag);
+                        return (
+                          <span key={tag} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, background: tc.bg, color: tc.color, display: "flex", alignItems: "center", gap: 4 }}>
+                            {tag}
+                            {isEditingTags && (
+                              <button onClick={() => removeTag(job.id, tags, tag)}
+                                style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, color: tc.color, padding: 0, lineHeight: 1 }}>✕</button>
+                            )}
+                          </span>
+                        );
+                      })}
+                      {isEditingTags ? (
+                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <input
+                            value={tagInput}
+                            onChange={(e) => setTagInput(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") addTag(job.id, tags); if (e.key === "Escape") { setEditingTagsId(null); setTagInput(""); } }}
+                            placeholder="Nouveau tag…"
+                            autoFocus
+                            style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, border: "0.5px solid #ccc", width: 120 }}
+                          />
+                          <button onClick={() => addTag(job.id, tags)}
+                            style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, border: "none", background: "#333", color: "#fff", cursor: "pointer" }}>+</button>
+                          <button onClick={() => { setEditingTagsId(null); setTagInput(""); }}
+                            style={{ fontSize: 11, padding: "2px 6px", borderRadius: 20, border: "0.5px solid #ccc", background: "transparent", cursor: "pointer" }}>✓</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { setEditingTagsId(job.id); setTagInput(""); }}
+                          style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, border: "0.5px dashed #ccc", background: "transparent", color: "#aaa", cursor: "pointer" }}>
+                          + Tag
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Stats */}
                     <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
                       {[
                         { label: "Date", val: fmtDate(job.created_at) },
@@ -157,7 +284,7 @@ export default function HistoryPage() {
                   </div>
 
                   {/* Actions */}
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
                     {job.status === "completed" && (
                       <>
                         {job.share_token && (
@@ -174,9 +301,7 @@ export default function HistoryPage() {
                         ))}
                       </>
                     )}
-                    <button
-                      onClick={() => deleteJob(job.id)}
-                      disabled={deletingId === job.id}
+                    <button onClick={() => deleteJob(job.id)} disabled={deletingId === job.id}
                       style={{ padding: "4px 9px", fontSize: 11, borderRadius: 6, border: "0.5px solid #F09595", color: "#A32D2D", background: "transparent", cursor: "pointer", opacity: deletingId === job.id ? 0.5 : 1 }}>
                       {deletingId === job.id ? "…" : "Supprimer"}
                     </button>
