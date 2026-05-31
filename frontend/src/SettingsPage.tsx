@@ -13,6 +13,7 @@ interface McpServerConfig {
 interface Settings {
   mcp_servers: Record<string, McpServerConfig>;
   default_provider: string;
+  webhook_url: string;
   providers_available?: Record<string, boolean>;
 }
 
@@ -111,6 +112,7 @@ export default function SettingsPage() {
         body: JSON.stringify({
           mcp_servers: settings.mcp_servers,
           default_provider: settings.default_provider,
+          webhook_url: settings.webhook_url,
         }),
       });
       if (!resp.ok) throw new Error((await resp.json()).detail);
@@ -196,6 +198,21 @@ export default function SettingsPage() {
         <p style={{ fontSize: 12, color: "#888", marginTop: 10 }}>
           Les clés API peuvent être saisies dans l'interface d'analyse (stockées dans votre navigateur uniquement).
         </p>
+      </section>
+
+      {/* Webhook */}
+      <section style={{ background: "#fff", border: "0.5px solid #ddd", borderRadius: 12, padding: "1.25rem", marginBottom: "1rem" }}>
+        <h2 style={{ fontSize: 15, fontWeight: 500, margin: "0 0 0.5rem" }}>Webhook fin de job</h2>
+        <p style={{ fontSize: 12, color: "#888", margin: "0 0 0.75rem" }}>
+          URL notifiée par POST JSON quand une transcription se termine.
+        </p>
+        <input
+          type="url"
+          placeholder="https://hooks.example.com/minta"
+          value={settings.webhook_url ?? ""}
+          onChange={(e) => setSettings({ ...settings, webhook_url: e.target.value })}
+          style={{ width: "100%", padding: "8px 12px", fontSize: 13, borderRadius: 8, border: "0.5px solid #ddd", boxSizing: "border-box" }}
+        />
       </section>
 
       {/* Serveurs MCP */}

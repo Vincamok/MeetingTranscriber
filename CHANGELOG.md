@@ -5,6 +5,42 @@ Format : [Semantic Versioning](https://semver.org/lang/fr/) — `MAJOR.MINOR.PAT
 
 ---
 
+## [0.4.0] — 2026-05-31
+
+### Ajouté
+- **Nom** : l'outil s'appelle désormais **Minta**
+- **Détection automatique de la langue** — Whisper détecte la langue si `language=auto` (défaut) ; sélecteur UI (fr, en, es, de, it, pt, ja, zh, auto)
+- **Support vidéo** — MP4, MKV, MOV, AVI, M4V acceptés ; ffmpeg extrait la piste audio avant la transcription
+- **Player audio synchronisé** — barre de lecture avec seek par clic ; segment actif surligné en jaune en temps réel
+- **Renommage des locuteurs** — clic sur le badge → édition inline ; `PATCH /api/transcribe/{id}/speakers`
+- **Partage public** — `POST /api/transcribe/{id}/share` génère un token ; page `/share/{token}` en lecture seule sans nav
+- **Webhook fin de job** — URL configurable dans les paramètres ; POST JSON envoyé à la fin de chaque transcription
+- **Templates de prompt IA** — Réunion projet / Entretien candidat / Support client / Démo commerciale
+- **Analyse IA étendue** : topics (sujets), sentiment par locuteur, suggestion de noms de locuteurs par l'IA
+- **Bouton "Appliquer" les noms suggérés** par l'IA directement dans le panneau analyse
+- **Audio conservé** dans `/tmp/minta/audio/` pour le player ; `GET /api/transcribe/{id}/audio` ; supprimé avec le job
+- Lien 🔗 dans l'historique si partage activé
+- `SharePage.tsx` — page publique de transcription partagée
+
+### Modifié
+- Répertoire de données : `/tmp/transcriber/` → `/tmp/minta/`
+- Backend version : 0.4.0, titre API : "Minta API"
+- `_run_pipeline` : extraction vidéo ffmpeg, conservation audio, langue dynamique, webhook post-job
+- `ai/prompts.py` : TEMPLATES multi-types, schema étendu (topics, sentiment, suggested_speaker_names)
+- `ai/providers.py` : AnalysisResult étendu, get_system_prompt(template) par provider
+- `ai/analyzer.py` : passage du template au provider
+- `SettingsPage.tsx` : + champ webhook URL
+
+### Reporté (trop complexe pour cette itération)
+- Amélioration audio (demucs/noisereduce — couche ML lourde)
+- Calendrier Google/Outlook (OAuth2)
+- Authentification JWT
+- Fusion multi-fichiers
+- Commentaires par segment
+- Édition manuelle du texte
+
+---
+
 ## [0.3.0] — 2026-05-31
 
 ### Ajouté

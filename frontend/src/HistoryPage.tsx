@@ -11,6 +11,8 @@ interface JobSummary {
   speakers: string[];
   word_count: number;
   error: string | null;
+  has_audio: boolean;
+  share_token: string | null;
   analysis_status: "running" | "completed" | "error" | null;
 }
 
@@ -157,6 +159,12 @@ export default function HistoryPage() {
                   <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
                     {job.status === "completed" && (
                       <>
+                        {job.share_token && (
+                          <button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/share/${job.share_token}`); }}
+                            style={{ padding: "4px 9px", fontSize: 11, borderRadius: 6, border: "0.5px solid #bbb", background: "transparent", cursor: "pointer" }}>
+                            🔗
+                          </button>
+                        )}
                         {(["txt", "srt", "json"] as const).map((fmt) => (
                           <button key={fmt} onClick={() => exportJob(job.id, fmt)}
                             style={{ padding: "4px 9px", fontSize: 11, borderRadius: 6, border: "0.5px solid #bbb", background: "transparent", cursor: "pointer" }}>

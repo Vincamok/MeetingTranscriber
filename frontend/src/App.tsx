@@ -2,6 +2,7 @@ import { BrowserRouter, Route, Routes, Link, useLocation } from "react-router-do
 import MeetingTranscriber from "./MeetingTranscriber";
 import HistoryPage from "./HistoryPage";
 import SettingsPage from "./SettingsPage";
+import SharePage from "./SharePage";
 
 function Nav() {
   const { pathname } = useLocation();
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="/" element={<MeetingTranscriber />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/share/:token" element={<SharePage />} />
         </Routes>
       </div>
     </BrowserRouter>

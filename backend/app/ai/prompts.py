@@ -1,46 +1,96 @@
-SYSTEM_PROMPT = """Tu es un assistant spécialisé dans l'analyse de comptes-rendus de réunions professionnelles.
+TEMPLATES: dict[str, dict] = {
+    "meeting": {
+        "label": "Réunion projet",
+        "system": (
+            "Tu es un assistant spécialisé dans l'analyse de comptes-rendus de réunions professionnelles. "
+            "À partir de la transcription, identifie le résumé, les décisions, les actions à réaliser, "
+            "les sujets abordés, le sentiment général de chaque locuteur, et suggère des prénoms plausibles "
+            "pour chaque locuteur basés sur ce qu'ils disent."
+        ),
+    },
+    "interview": {
+        "label": "Entretien candidat",
+        "system": (
+            "Tu es un assistant RH analysant un entretien d'embauche. "
+            "Identifie les compétences mentionnées, les points forts et axes d'amélioration du candidat, "
+            "les questions posées, et les prochaines étapes discutées. "
+            "Le locuteur principal est le recruteur, les autres sont des candidats."
+        ),
+    },
+    "support": {
+        "label": "Support client",
+        "system": (
+            "Tu es un assistant analysant un appel de support client. "
+            "Identifie le problème rapporté, la solution proposée, le niveau de satisfaction client, "
+            "et les actions de suivi nécessaires."
+        ),
+    },
+    "demo": {
+        "label": "Démo commerciale",
+        "system": (
+            "Tu es un assistant analysant une démonstration commerciale. "
+            "Identifie les fonctionnalités présentées, les objections soulevées, les engagements pris, "
+            "et les prochaines étapes commerciales."
+        ),
+    },
+}
 
-À partir de la transcription fournie, tu dois :
-
-1. Rédiger un **résumé** concis (3-5 phrases) des points essentiels abordés.
-2. Lister les **décisions** prises durant la réunion (si aucune, retourner une liste vide).
-3. Lister les **actions** à réaliser : pour chaque action, indiquer le texte, le responsable (si mentionné, sinon null) et la date limite (si mentionnée, sinon null).
-
-Si des outils MCP sont disponibles, utilise-les pour créer les tâches identifiées dans les outils de suivi appropriés. Utilise les outils de façon ciblée : ne crée des éléments que si le contenu de la réunion le justifie clairement.
-
-Réponds uniquement en français.
-Sois factuel et concis. Ne reformule pas ce qui est déjà dans la transcription.
+_COMMON_INSTRUCTIONS = """
+Réponds uniquement dans la langue de la transcription.
+Sois factuel et concis. Utilise le tool save_analysis pour structurer ta réponse.
+Si des outils MCP sont disponibles, utilise-les pour créer les tâches identifiées.
 """
+
+
+def get_system_prompt(template: str) -> str:
+    tmpl = TEMPLATES.get(template, TEMPLATES["meeting"])
+    return tmpl["system"] + _COMMON_INSTRUCTIONS
+
 
 ANALYSIS_TOOL_SCHEMA = {
     "name": "save_analysis",
-    "description": "Enregistre le résumé structuré de la réunion (résumé, décisions, actions).",
+    "description": "Enregistre l'analyse structurée de la réunion.",
     "input_schema": {
         "type": "object",
         "properties": {
             "summary": {
                 "type": "string",
-                "description": "Résumé concis de la réunion (3-5 phrases).",
+                "description": "Résumé concis (3-5 phrases).",
             },
             "decisions": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Liste des décisions prises durant la réunion.",
+                "description": "Décisions prises.",
             },
             "actions": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "text": {"type": "string", "description": "Description de l'action."},
-                        "assignee": {"type": ["string", "null"], "description": "Responsable (null si non précisé)."},
-                        "due": {"type": ["string", "null"], "description": "Date limite (null si non précisée)."},
+                        "text": {"type": "string"},
+                        "assignee": {"type": ["string", "null"]},
+                        "due": {"type": ["string", "null"]},
                     },
                     "required": ["text", "assignee", "due"],
                 },
-                "description": "Liste des actions identifiées.",
+                "description": "Actions à réaliser.",
+            },
+            "topics": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Sujets principaux abordés (mots-clés ou thèmes courts).",
+            },
+            "sentiment_per_speaker": {
+                "type": "object",
+                "description": "Sentiment dominant par locuteur (clé = SPEAKER_XX, valeur = positif | neutre | négatif | tendu).",
+                "additionalProperties": {"type": "string"},
+            },
+            "suggested_speaker_names": {
+                "type": "object",
+                "description": "Noms ou rôles suggérés par locuteur déduits du contenu (clé = SPEAKER_XX, valeur = prénom/rôle).",
+                "additionalProperties": {"type": "string"},
             },
         },
-        "required": ["summary", "decisions", "actions"],
+        "required": ["summary", "decisions", "actions", "topics", "sentiment_per_speaker", "suggested_speaker_names"],
     },
 }

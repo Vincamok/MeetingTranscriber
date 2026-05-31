@@ -13,11 +13,21 @@
 
 ---
 
-## [0.4.0] — Qualité & édition
+## [0.4.0] — Support vidéo, player, partage, IA étendue ✅ (livré)
+
+- [x] Support vidéo (MP4, MKV, MOV, AVI)
+- [x] Player audio synchronisé avec surlignage du segment actif
+- [x] Renommage des locuteurs (inline + suggestion IA)
+- [x] Partage public `/share/{token}`
+- [x] Webhook fin de job
+- [x] Templates de prompt IA (réunion, entretien, support, démo)
+- [x] Analyse étendue : topics, sentiment, suggestion de noms
+- [x] Langue auto-détectée + sélecteur UI
+
+## [0.5.0] — Qualité & édition
 
 - [ ] **Édition manuelle** — corriger le texte d'un segment directement dans l'interface
-- [ ] **Renommage des locuteurs** — remplacer "Locuteur A" par un vrai prénom, persisté dans le job
-- [ ] **Lecture audio synchronisée** — clic sur un segment → seek dans le player audio
+- [ ] **Commentaires par segment** — annoter un passage (comme Notion)
 
 ---
 

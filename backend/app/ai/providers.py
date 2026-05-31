@@ -1,18 +1,16 @@
 """
 Fournisseurs IA : abstraction commune + implémentations Anthropic / OpenAI.
-Chaque provider gère sa propre boucle tool-use.
 """
 
 import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
 
 from .mcp_client import MCPClient
-from .prompts import ANALYSIS_TOOL_SCHEMA, SYSTEM_PROMPT
+from .prompts import ANALYSIS_TOOL_SCHEMA, get_system_prompt
 
-log = logging.getLogger("transcriber.ai")
+log = logging.getLogger("minta.ai")
 
 
 @dataclass
@@ -20,10 +18,13 @@ class AnalysisResult:
     summary: str = ""
     decisions: list[str] = field(default_factory=list)
     actions: list[dict] = field(default_factory=list)
+    topics: list[str] = field(default_factory=list)
+    sentiment_per_speaker: dict[str, str] = field(default_factory=dict)
+    suggested_speaker_names: dict[str, str] = field(default_factory=dict)
     mcp_results: list[dict] = field(default_factory=list)
 
 
-def _build_transcript_text(utterances: list[dict]) -> str:
+def _build_transcript(utterances: list[dict]) -> str:
     lines = []
     for u in utterances:
         lines.append(f"[{u['speaker']}] {u['text']}")
@@ -37,8 +38,8 @@ class BaseProvider(ABC):
         utterances: list[dict],
         mcp_client: MCPClient,
         active_servers: list[str],
-    ) -> AnalysisResult:
-        ...
+        template: str,
+    ) -> AnalysisResult: ...
 
 
 # ---------------------------------------------------------------------------
@@ -50,96 +51,54 @@ class AnthropicProvider(BaseProvider):
         import anthropic
         self._client = anthropic.Anthropic(api_key=api_key)
 
-    async def analyze(
-        self,
-        utterances: list[dict],
-        mcp_client: MCPClient,
-        active_servers: list[str],
-    ) -> AnalysisResult:
-        import anthropic
-
-        transcript = _build_transcript_text(utterances)
+    async def analyze(self, utterances, mcp_client, active_servers, template) -> AnalysisResult:
+        transcript = _build_transcript(utterances)
         result = AnalysisResult()
+        system = get_system_prompt(template)
 
-        # Collecter les tools MCP + le tool d'analyse structurée
-        mcp_tools_meta: dict[str, dict] = {}  # name → {server, tool}
-        tools: list[dict] = []
+        mcp_meta: dict[str, dict] = {}
+        tools: list[dict] = [ANALYSIS_TOOL_SCHEMA]
 
         for server in active_servers:
             try:
-                server_tools = await mcp_client.list_tools(server)
-                for t in server_tools:
-                    mcp_tools_meta[t["name"]] = {"server": t["_server"], "tool": t["_tool"]}
-                    tools.append({
-                        "name": t["name"],
-                        "description": t["description"],
-                        "input_schema": t["input_schema"],
-                    })
+                for t in await mcp_client.list_tools(server):
+                    mcp_meta[t["name"]] = {"server": t["_server"], "tool": t["_tool"]}
+                    tools.append({"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]})
             except Exception as exc:
                 log.warning("mcp list_tools failed", extra={"server": server, "error": str(exc)})
 
-        # Toujours inclure le tool d'analyse structurée en premier
-        tools.insert(0, ANALYSIS_TOOL_SCHEMA)
+        messages = [{"role": "user", "content": f"Transcription :\n\n{transcript}"}]
 
-        messages = [{"role": "user", "content": f"Voici la transcription de la réunion :\n\n{transcript}"}]
-
-        # Boucle tool-use
-        for _ in range(20):  # max iterations
-            response = self._client.messages.create(
-                model="claude-opus-4-8",
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                tools=tools,
-                messages=messages,
+        for _ in range(20):
+            resp = self._client.messages.create(
+                model="claude-opus-4-8", max_tokens=4096,
+                system=system, tools=tools, messages=messages,
             )
-            log.debug("anthropic response", extra={"stop_reason": response.stop_reason})
-
-            # Ajouter la réponse assistant aux messages
-            messages.append({"role": "assistant", "content": response.content})
-
-            if response.stop_reason != "tool_use":
+            messages.append({"role": "assistant", "content": resp.content})
+            if resp.stop_reason != "tool_use":
                 break
 
-            # Traiter les tool calls
             tool_results = []
-            for block in response.content:
+            for block in resp.content:
                 if block.type != "tool_use":
                     continue
-
-                tool_name = block.name
-                tool_input = block.input
-
-                if tool_name == "save_analysis":
-                    result.summary = tool_input.get("summary", "")
-                    result.decisions = tool_input.get("decisions", [])
-                    result.actions = tool_input.get("actions", [])
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": "Analyse enregistrée.",
-                    })
-                elif tool_name in mcp_tools_meta:
-                    meta = mcp_tools_meta[tool_name]
+                if block.name == "save_analysis":
+                    inp = block.input
+                    result.summary = inp.get("summary", "")
+                    result.decisions = inp.get("decisions", [])
+                    result.actions = inp.get("actions", [])
+                    result.topics = inp.get("topics", [])
+                    result.sentiment_per_speaker = inp.get("sentiment_per_speaker", {})
+                    result.suggested_speaker_names = inp.get("suggested_speaker_names", {})
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": "OK"})
+                elif block.name in mcp_meta:
+                    meta = mcp_meta[block.name]
                     try:
-                        mcp_out = await mcp_client.call_tool(meta["server"], meta["tool"], tool_input)
-                        result.mcp_results.append({
-                            "server": meta["server"],
-                            "action": meta["tool"],
-                            "result": mcp_out,
-                        })
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": mcp_out,
-                        })
+                        out = await mcp_client.call_tool(meta["server"], meta["tool"], block.input)
+                        result.mcp_results.append({"server": meta["server"], "action": meta["tool"], "result": out})
+                        tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
                     except Exception as exc:
-                        log.warning("mcp call_tool failed", extra={"tool": tool_name, "error": str(exc)})
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": f"Erreur : {exc}",
-                            "is_error": True,
-                        })
+                        tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": f"Erreur : {exc}", "is_error": True})
 
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
@@ -157,98 +116,64 @@ class OpenAIProvider(BaseProvider):
         self._client = openai.OpenAI(api_key=api_key)
 
     @staticmethod
-    def _to_openai_tool(tool: dict) -> dict:
-        return {
-            "type": "function",
-            "function": {
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
-            },
-        }
+    def _wrap(tool: dict) -> dict:
+        return {"type": "function", "function": {
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+        }}
 
-    async def analyze(
-        self,
-        utterances: list[dict],
-        mcp_client: MCPClient,
-        active_servers: list[str],
-    ) -> AnalysisResult:
-        transcript = _build_transcript_text(utterances)
+    async def analyze(self, utterances, mcp_client, active_servers, template) -> AnalysisResult:
+        transcript = _build_transcript(utterances)
         result = AnalysisResult()
+        system = get_system_prompt(template)
 
-        mcp_tools_meta: dict[str, dict] = {}
-        tools: list[dict] = []
+        mcp_meta: dict[str, dict] = {}
+        tools = [self._wrap(ANALYSIS_TOOL_SCHEMA)]
 
         for server in active_servers:
             try:
-                server_tools = await mcp_client.list_tools(server)
-                for t in server_tools:
-                    mcp_tools_meta[t["name"]] = {"server": t["_server"], "tool": t["_tool"]}
-                    tools.append(self._to_openai_tool(t))
+                for t in await mcp_client.list_tools(server):
+                    mcp_meta[t["name"]] = {"server": t["_server"], "tool": t["_tool"]}
+                    tools.append(self._wrap(t))
             except Exception as exc:
                 log.warning("mcp list_tools failed", extra={"server": server, "error": str(exc)})
 
-        tools.insert(0, self._to_openai_tool(ANALYSIS_TOOL_SCHEMA))
-
-        messages: list[dict] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Voici la transcription de la réunion :\n\n{transcript}"},
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Transcription :\n\n{transcript}"},
         ]
 
         for _ in range(20):
-            response = self._client.chat.completions.create(
-                model="gpt-4o",
-                tools=tools,
-                messages=messages,
-            )
-            choice = response.choices[0]
-            log.debug("openai response", extra={"finish_reason": choice.finish_reason})
-
+            resp = self._client.chat.completions.create(model="gpt-4o", tools=tools, messages=messages)
+            choice = resp.choices[0]
             messages.append(choice.message)
-
             if choice.finish_reason != "tool_calls" or not choice.message.tool_calls:
                 break
 
-            tool_messages = []
+            tool_msgs = []
             for tc in choice.message.tool_calls:
-                tool_name = tc.function.name
                 try:
-                    tool_input = json.loads(tc.function.arguments)
+                    inp = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
-                    tool_input = {}
-
-                if tool_name == "save_analysis":
-                    result.summary = tool_input.get("summary", "")
-                    result.decisions = tool_input.get("decisions", [])
-                    result.actions = tool_input.get("actions", [])
-                    tool_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": "Analyse enregistrée.",
-                    })
-                elif tool_name in mcp_tools_meta:
-                    meta = mcp_tools_meta[tool_name]
+                    inp = {}
+                if tc.function.name == "save_analysis":
+                    result.summary = inp.get("summary", "")
+                    result.decisions = inp.get("decisions", [])
+                    result.actions = inp.get("actions", [])
+                    result.topics = inp.get("topics", [])
+                    result.sentiment_per_speaker = inp.get("sentiment_per_speaker", {})
+                    result.suggested_speaker_names = inp.get("suggested_speaker_names", {})
+                    tool_msgs.append({"role": "tool", "tool_call_id": tc.id, "content": "OK"})
+                elif tc.function.name in mcp_meta:
+                    meta = mcp_meta[tc.function.name]
                     try:
-                        mcp_out = await mcp_client.call_tool(meta["server"], meta["tool"], tool_input)
-                        result.mcp_results.append({
-                            "server": meta["server"],
-                            "action": meta["tool"],
-                            "result": mcp_out,
-                        })
-                        tool_messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": mcp_out,
-                        })
+                        out = await mcp_client.call_tool(meta["server"], meta["tool"], inp)
+                        result.mcp_results.append({"server": meta["server"], "action": meta["tool"], "result": out})
+                        tool_msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
                     except Exception as exc:
-                        log.warning("mcp call_tool failed", extra={"tool": tool_name, "error": str(exc)})
-                        tool_messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": f"Erreur : {exc}",
-                        })
-
-            messages.extend(tool_messages)
+                        tool_msgs.append({"role": "tool", "tool_call_id": tc.id, "content": f"Erreur : {exc}"})
+            messages.extend(tool_msgs)
 
         return result
 
