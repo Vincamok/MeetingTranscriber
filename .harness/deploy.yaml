@@ -1,0 +1,153 @@
+# Minta — déploiement sur le serveur cible via SSH.
+# Ordre recommandé : pullrepo_github → build-all → security-scan → deploy
+#
+# Secrets requis :
+#   harness_user       : utilisateur du registry
+#   harness_token      : mot de passe / token du registry
+#   deploy_ssh_key     : clé privée SSH (PEM, sans passphrase) pour le serveur cible
+#   deploy_ssh_host    : IP ou hostname du serveur cible (ex: 192.168.200.50)
+#   deploy_ssh_user    : utilisateur SSH sur le serveur cible (ex: minta)
+#
+# Sur le serveur cible, le projet doit être cloné dans DEPLOY_PATH
+# et un fichier .env correctement rempli doit être présent.
+kind: pipeline
+spec:
+  stages:
+    - name: deploy
+      type: ci
+      spec:
+        cloneCodebase: false
+        steps:
+
+          # ------------------------------------------------------------------ #
+          # 1. Déploiement SSH : pull images + docker-compose up               #
+          # ------------------------------------------------------------------ #
+          - name: deploy_via_ssh
+            type: run
+            timeout: 10m
+            spec:
+              container:
+                image: alpine:3.19
+                pull: if-not-exists
+              shell: Sh
+              envs:
+                REGISTRY_USER: ${{ secrets.get('harness_user') }}
+                REGISTRY_TOKEN: ${{ secrets.get('harness_token') }}
+                REGISTRY_HOST: "192.168.200.45:3000"
+                IMAGE_BASE: "vincent/minta"
+                DEPLOY_SSH_KEY: ${{ secrets.get('deploy_ssh_key') }}
+                DEPLOY_SSH_HOST: ${{ secrets.get('deploy_ssh_host') }}
+                DEPLOY_SSH_USER: ${{ secrets.get('deploy_ssh_user') }}
+                DEPLOY_PATH: "/opt/minta"
+                COMPOSE_PROFILE: "cpu"
+              script: |-
+                set -eu
+                apk add --no-cache openssh-client
+
+                # ── Clé SSH ─────────────────────────────────────────────────
+                mkdir -p /root/.ssh
+                printf '%s\n' "${DEPLOY_SSH_KEY}" > /root/.ssh/id_deploy
+                chmod 600 /root/.ssh/id_deploy
+                ssh-keyscan -H "${DEPLOY_SSH_HOST}" >> /root/.ssh/known_hosts 2>/dev/null
+
+                SSH="ssh -i /root/.ssh/id_deploy -o StrictHostKeyChecking=yes ${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}"
+
+                echo "==> Connexion SSH à ${DEPLOY_SSH_HOST} vérifiée"
+
+                # ── Commandes distantes ──────────────────────────────────────
+                $SSH /bin/sh -s -- \
+                  "${REGISTRY_HOST}" \
+                  "${REGISTRY_USER}" \
+                  "${REGISTRY_TOKEN}" \
+                  "${IMAGE_BASE}" \
+                  "${DEPLOY_PATH}" \
+                  "${COMPOSE_PROFILE}" << 'REMOTE'
+                set -eu
+                REGISTRY_HOST="$1"
+                REGISTRY_USER="$2"
+                REGISTRY_TOKEN="$3"
+                IMAGE_BASE="$4"
+                DEPLOY_PATH="$5"
+                COMPOSE_PROFILE="$6"
+
+                echo "==> Login registry ${REGISTRY_HOST}"
+                echo "${REGISTRY_TOKEN}" | docker login \
+                  --username "${REGISTRY_USER}" \
+                  --password-stdin \
+                  "http://${REGISTRY_HOST}"
+
+                echo "==> Pull images"
+                for img in backend frontend; do
+                  docker pull --quiet "${REGISTRY_HOST}/${IMAGE_BASE}/${img}:latest"
+                done
+                # backend-gpu seulement si profil gpu
+                if [ "${COMPOSE_PROFILE}" = "gpu" ]; then
+                  docker pull --quiet "${REGISTRY_HOST}/${IMAGE_BASE}/backend-gpu:latest"
+                fi
+
+                echo "==> docker logout"
+                docker logout "http://${REGISTRY_HOST}" || true
+
+                echo "==> Démarrage des conteneurs (profil ${COMPOSE_PROFILE})"
+                cd "${DEPLOY_PATH}"
+                docker compose --profile "${COMPOSE_PROFILE}" up -d --remove-orphans
+
+                echo "==> Nettoyage images obsolètes"
+                docker image prune -f --filter "until=24h" || true
+
+                echo "==> Déploiement terminé"
+                REMOTE
+
+                echo "==> Déploiement OK sur ${DEPLOY_SSH_HOST}"
+
+          # ------------------------------------------------------------------ #
+          # 2. Health-check post-déploiement                                   #
+          # ------------------------------------------------------------------ #
+          - name: healthcheck
+            type: run
+            timeout: 3m
+            spec:
+              container:
+                image: alpine:3.19
+                pull: if-not-exists
+              shell: Sh
+              envs:
+                DEPLOY_SSH_KEY: ${{ secrets.get('deploy_ssh_key') }}
+                DEPLOY_SSH_HOST: ${{ secrets.get('deploy_ssh_host') }}
+                DEPLOY_SSH_USER: ${{ secrets.get('deploy_ssh_user') }}
+                BACKEND_PORT: "8000"
+                RETRY: "12"
+                WAIT: "5"
+              script: |-
+                set -eu
+                apk add --no-cache openssh-client
+
+                mkdir -p /root/.ssh
+                printf '%s\n' "${DEPLOY_SSH_KEY}" > /root/.ssh/id_deploy
+                chmod 600 /root/.ssh/id_deploy
+                ssh-keyscan -H "${DEPLOY_SSH_HOST}" >> /root/.ssh/known_hosts 2>/dev/null
+
+                SSH="ssh -i /root/.ssh/id_deploy -o StrictHostKeyChecking=yes ${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}"
+
+                echo "==> Health-check /api/health sur ${DEPLOY_SSH_HOST}:${BACKEND_PORT}"
+
+                $SSH /bin/sh -s -- "${BACKEND_PORT}" "${RETRY}" "${WAIT}" << 'REMOTE'
+                set -eu
+                PORT="$1"; RETRY="$2"; WAIT="$3"
+                i=0
+                while [ "${i}" -lt "${RETRY}" ]; do
+                  i=$((i + 1))
+                  STATUS="$(wget -qO- "http://localhost:${PORT}/api/health" 2>/dev/null \
+                    | grep -o '"status":"ok"' || true)"
+                  if [ -n "${STATUS}" ]; then
+                    echo "==> Health-check OK (tentative ${i}/${RETRY})"
+                    exit 0
+                  fi
+                  echo "  attente... (${i}/${RETRY})"
+                  sleep "${WAIT}"
+                done
+                echo "==> Health-check ECHEC après ${RETRY} tentatives" >&2
+                exit 1
+                REMOTE
+
+                echo "==> Service opérationnel"

@@ -4,3 +4,9 @@ dist/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Rapports de sécurité — les JSON/HTML sont lourds et committé uniquement
+# par le bot Harness via [skip ci]. On versionne seulement summary.md.
+reports/security/**/trivy-*.json
+reports/security/**/owasp.json
+reports/security/.last-run
