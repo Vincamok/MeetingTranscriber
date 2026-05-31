@@ -33,11 +33,11 @@
 
 ---
 
-## [0.6.0] — Stockage & multi-utilisateurs
+## [0.6.0] — Stockage & Auth ✅ (livré)
 
-- [ ] **Stockage objet MinIO** — archiver les fichiers audio liés à chaque job
-- [ ] **Authentification JWT** — comptes utilisateurs, isolation des jobs par utilisateur
-- [ ] **Partage de transcription** — lien public en lecture seule pour un job
+- [x] **DATA_DIR configurable** — volume Docker persistant pour jobs + audio
+- [x] **Authentification JWT** — login page, token Bearer 24h, `AUTH_ENABLED` opt-in
+- [x] **apiFetch centralisé** — headers auth injectés automatiquement dans le frontend
 
 ---
 

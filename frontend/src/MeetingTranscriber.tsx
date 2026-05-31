@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import AIAnalysisPanel from "./AIAnalysisPanel";
+import { apiFetch } from "./api";
 
 const SPEAKER_COLORS = [
   { bg: "#E6F1FB", text: "#0C447C" },
@@ -181,7 +182,7 @@ export default function MeetingTranscriber() {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
       try {
-        const resp = await fetch(`/api/transcribe/${jobId}`);
+        const resp = await apiFetch(`/api/transcribe/${jobId}`);
         if (!resp.ok) return;
         const data: Job = await resp.json();
         if (data.status === "completed" || data.status === "error") {
@@ -211,7 +212,7 @@ export default function MeetingTranscriber() {
       const form = new FormData();
       form.append("file", fileToSend, uploadedFileRef.current?.name ?? "recording.webm");
       form.append("language", language);
-      const resp = await fetch("/api/upload", { method: "POST", body: form });
+      const resp = await apiFetch("/api/upload", { method: "POST", body: form });
       if (!resp.ok) {
         const d = await resp.json().catch(() => ({ detail: resp.statusText }));
         throw new Error(d.detail ?? resp.statusText);
@@ -228,7 +229,7 @@ export default function MeetingTranscriber() {
 
   const exportTranscript = async (format: "txt" | "srt" | "json" | "docx") => {
     if (!job) return;
-    const resp = await fetch(`/api/transcribe/${job.id}/export?format=${format}`);
+    const resp = await apiFetch(`/api/transcribe/${job.id}/export?format=${format}`);
     if (!resp.ok) return;
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
@@ -240,7 +241,7 @@ export default function MeetingTranscriber() {
   const saveNameEdit = async () => {
     if (!job || !editingName) return;
     const newNames = { ...job.speaker_names, [editingName]: editValue };
-    await fetch(`/api/transcribe/${job.id}/speakers`, {
+    await apiFetch(`/api/transcribe/${job.id}/speakers`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ speaker_names: newNames }),
@@ -251,7 +252,7 @@ export default function MeetingTranscriber() {
 
   const saveSegmentEdit = async (idx: number) => {
     if (!job) return;
-    await fetch(`/api/transcribe/${job.id}/segments`, {
+    await apiFetch(`/api/transcribe/${job.id}/segments`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ segments: [{ index: idx, text: editSegmentValue }] }),
@@ -267,7 +268,7 @@ export default function MeetingTranscriber() {
 
   const saveComment = async (idx: number) => {
     if (!job) return;
-    await fetch(`/api/transcribe/${job.id}/segments`, {
+    await apiFetch(`/api/transcribe/${job.id}/segments`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ segments: [{ index: idx, comment: commentValue }] }),
@@ -284,7 +285,7 @@ export default function MeetingTranscriber() {
   const createShare = async () => {
     if (!job) return;
     setSharing(true);
-    const resp = await fetch(`/api/transcribe/${job.id}/share`, { method: "POST" });
+    const resp = await apiFetch(`/api/transcribe/${job.id}/share`, { method: "POST" });
     if (resp.ok) {
       const { share_token } = await resp.json();
       setJob({ ...job, share_token });
@@ -548,7 +549,7 @@ export default function MeetingTranscriber() {
           speakerNames={speakerNames}
           onAnalysisUpdate={(analysis) => setJob((j) => j ? { ...j, analysis } : j)}
           onApplySpeakerNames={async (names) => {
-            await fetch(`/api/transcribe/${job.id}/speakers`, {
+            await apiFetch(`/api/transcribe/${job.id}/speakers`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ speaker_names: names }),

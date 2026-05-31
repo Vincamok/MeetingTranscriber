@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "./api";
 
 const TEMPLATES = [
   { value: "meeting",   label: "Réunion projet" },
@@ -52,7 +53,7 @@ export default function AIAnalysisPanel({ jobId, existingAnalysis, speakerNames 
   const [open,       setOpen]       = useState(false);
 
   useEffect(() => {
-    fetch("/api/settings").then((r) => r.json()).then((s) => {
+    apiFetch("/api/settings").then((r) => r.json()).then((s) => {
       setMcpServers(s.mcp_servers ?? {});
       if (!localStorage.getItem(LS_KEY_PROVIDER) && s.default_provider) setProvider(s.default_provider);
     }).catch(() => {});
@@ -64,7 +65,7 @@ export default function AIAnalysisPanel({ jobId, existingAnalysis, speakerNames 
   useEffect(() => {
     if (analysis?.status !== "running") return;
     const id = setInterval(async () => {
-      const resp = await fetch(`/api/transcribe/${jobId}`);
+      const resp = await apiFetch(`/api/transcribe/${jobId}`);
       if (!resp.ok) return;
       const job = await resp.json();
       if (job.analysis) {
@@ -82,7 +83,7 @@ export default function AIAnalysisPanel({ jobId, existingAnalysis, speakerNames 
   const launch = async () => {
     setError(""); setLoading(true);
     try {
-      const resp = await fetch(`/api/transcribe/${jobId}/analyze`, {
+      const resp = await apiFetch(`/api/transcribe/${jobId}/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider, api_key: apiKey || undefined, mcp_servers: selectedServers, template }),

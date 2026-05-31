@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { apiFetch } from "./api";
 
 interface McpServerConfig {
   type: "stdio" | "sse";
@@ -95,7 +96,7 @@ export default function SettingsPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch("/api/settings")
+    apiFetch("/api/settings")
       .then((r) => r.json())
       .then(setSettings)
       .catch(() => setError("Impossible de charger la configuration."));
@@ -106,7 +107,7 @@ export default function SettingsPage() {
     setSaving(true);
     setError("");
     try {
-      const resp = await fetch("/api/settings", {
+      const resp = await apiFetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

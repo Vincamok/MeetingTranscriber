@@ -5,6 +5,22 @@ Format : [Semantic Versioning](https://semver.org/lang/fr/) — `MAJOR.MINOR.PAT
 
 ---
 
+## [0.6.0] — 2026-05-31
+
+### Ajouté
+- **Authentification JWT** — `AUTH_ENABLED=true` active la protection ; `AUTH_USERNAME` / `AUTH_PASSWORD` dans .env ; `POST /api/auth/login` retourne un token 24h ; page de connexion frontend avec formulaire
+- **Token Bearer sur tous les endpoints privés** — toutes les routes `/api/*` (sauf `/api/health` et `/api/share/{token}`) vérifient le JWT si AUTH_ENABLED
+- **DATA_DIR configurable** — répertoire de persistance paramétrable via env var (`/data/minta` par défaut) ; volume Docker `minta_data` pour la persistance des jobs et de l'audio
+- **Bouton Déconnexion** dans la nav quand l'auth est activée
+- **`apiFetch`** — wrapper fetch centralisé qui injecte automatiquement le header `Authorization: Bearer` sur tous les appels API du frontend
+
+### Modifié
+- `docker-compose.yml` : variables AUTH_* et DATA_DIR ajoutées, volume renommé `minta_data`
+- `requirements.txt` : + `python-jose[cryptography]`, `passlib[bcrypt]`
+- Version backend : 0.4.0 → 0.6.0
+
+---
+
 ## [0.5.0] — 2026-05-31
 
 ### Ajouté

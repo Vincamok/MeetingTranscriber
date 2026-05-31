@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { apiFetch } from "./api";
 
 interface JobSummary {
   id: string;
@@ -43,7 +44,7 @@ export default function HistoryPage() {
 
   const fetchJobs = async () => {
     try {
-      const resp = await fetch("/api/transcripts");
+      const resp = await apiFetch("/api/transcripts");
       if (resp.ok) setJobs(await resp.json());
     } finally {
       setLoading(false);
@@ -63,7 +64,7 @@ export default function HistoryPage() {
     if (!confirm("Supprimer cette transcription ?")) return;
     setDeletingId(jobId);
     try {
-      await fetch(`/api/transcribe/${jobId}`, { method: "DELETE" });
+      await apiFetch(`/api/transcribe/${jobId}`, { method: "DELETE" });
       setJobs((prev) => prev.filter((j) => j.id !== jobId));
     } finally {
       setDeletingId(null);
@@ -71,7 +72,7 @@ export default function HistoryPage() {
   };
 
   const exportJob = async (jobId: string, format: "txt" | "srt" | "json") => {
-    const resp = await fetch(`/api/transcribe/${jobId}/export?format=${format}`);
+    const resp = await apiFetch(`/api/transcribe/${jobId}/export?format=${format}`);
     if (!resp.ok) return;
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);

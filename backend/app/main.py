@@ -33,9 +33,10 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import aiofiles
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Security, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel as PydanticModel
 from pythonjsonlogger import jsonlogger
 
@@ -64,6 +65,62 @@ SETTINGS_FILE = BASE_DIR / "settings.json"
 AI_DEFAULT_PROVIDER: str = os.getenv("AI_DEFAULT_PROVIDER", "anthropic")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Auth JWT (optionnel — activé uniquement si AUTH_ENABLED=true)
+# ---------------------------------------------------------------------------
+
+AUTH_ENABLED: bool = os.getenv("AUTH_ENABLED", "false").lower() == "true"
+AUTH_USERNAME: str = os.getenv("AUTH_USERNAME", "admin")
+AUTH_PASSWORD: str = os.getenv("AUTH_PASSWORD", "")  # En clair, hashé au démarrage
+JWT_SECRET: str = os.getenv("JWT_SECRET", secrets.token_hex(32))  # généré si absent
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = 24
+
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+def _hash_password(pwd: str) -> str:
+    from passlib.context import CryptContext
+    return CryptContext(schemes=["bcrypt"], deprecated="auto").hash(pwd)
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    from passlib.context import CryptContext
+    return CryptContext(schemes=["bcrypt"], deprecated="auto").verify(plain, hashed)
+
+def _create_token(username: str) -> str:
+    from jose import jwt
+    from datetime import timedelta
+    expire = datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS)
+    return jwt.encode({"sub": username, "exp": expire}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def _decode_token(token: str) -> str:
+    from jose import JWTError, jwt
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        username: str = payload.get("sub", "")
+        if not username:
+            raise ValueError("sub manquant")
+        return username
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail=f"Token invalide : {exc}")
+
+def require_auth(credentials: Optional[HTTPAuthorizationCredentials] = Security(_bearer_scheme)) -> str:
+    """Dépendance FastAPI : vérifie le JWT si AUTH_ENABLED, sinon laisse passer."""
+    if not AUTH_ENABLED:
+        return "anonymous"
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Token d'authentification requis", headers={"WWW-Authenticate": "Bearer"})
+    return _decode_token(credentials.credentials)
+
+# Hash du mot de passe au démarrage (uniquement si auth activé)
+_auth_password_hash: str = ""
+if AUTH_ENABLED:
+    if not AUTH_PASSWORD:
+        log.warning("AUTH_ENABLED=true mais AUTH_PASSWORD non défini — authentification désactivée")
+        AUTH_ENABLED = False
+    else:
+        _auth_password_hash = _hash_password(AUTH_PASSWORD)
+        log.info("auth enabled", extra={"username": AUTH_USERNAME})
 
 for _d in (JOB_DIR, UPLOAD_DIR, AUDIO_DIR):
     _d.mkdir(parents=True, exist_ok=True)
@@ -459,7 +516,7 @@ def health():
     return {
         "status": "ok",
         "app": "Minta",
-        "version": "0.4.0",
+        "version": "0.6.0",
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
         "whisper_model": WHISPER_MODEL,
@@ -468,7 +525,29 @@ def health():
         "hf_token_configured": bool(HF_TOKEN),
         "diarization_available": _diarize_pipeline is not None,
         "jobs_running": _running_jobs_count(),
+        "auth_enabled": AUTH_ENABLED,
     }
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+class LoginRequest(PydanticModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest):
+    """Retourne un JWT si les identifiants sont corrects. Toujours disponible."""
+    if not AUTH_ENABLED:
+        return {"token": None, "auth_enabled": False}
+    if req.username != AUTH_USERNAME or not _verify_password(req.password, _auth_password_hash):
+        raise HTTPException(status_code=401, detail="Identifiants invalides")
+    token = _create_token(req.username)
+    log.info("login success", extra={"username": req.username})
+    return {"token": token, "auth_enabled": True, "expires_in": JWT_EXPIRE_HOURS * 3600}
 
 
 @app.post("/api/upload", status_code=202)
@@ -476,6 +555,7 @@ async def upload_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     language: str = Form("auto"),
+    _: str = Depends(require_auth),
 ):
     """Reçoit un fichier audio ou vidéo, crée un job et lance le pipeline."""
     job_id = str(uuid.uuid4())
@@ -521,12 +601,12 @@ async def upload_audio(
 
 
 @app.get("/api/transcribe/{job_id}")
-def get_job(job_id: str):
+def get_job(job_id: str, _: str = Depends(require_auth)):
     return _load_job(job_id)
 
 
 @app.get("/api/transcribe/{job_id}/audio")
-def get_audio(job_id: str):
+def get_audio(job_id: str, _: str = Depends(require_auth)):
     _load_job(job_id)  # vérifie que le job existe
     audio = _find_audio(job_id)
     if not audio:
@@ -536,7 +616,7 @@ def get_audio(job_id: str):
 
 
 @app.get("/api/transcribe/{job_id}/export")
-def export_job(job_id: str, format: Literal["txt", "srt", "json", "docx"] = Query("txt")):
+def export_job(job_id: str, format: Literal["txt", "srt", "json", "docx"] = Query("txt"), _: str = Depends(require_auth)):
     job = _load_job(job_id)
     if job["status"] != "completed":
         raise HTTPException(status_code=409, detail="Transcription non terminée")
@@ -589,7 +669,7 @@ class SpeakerNamesUpdate(PydanticModel):
 
 
 @app.patch("/api/transcribe/{job_id}/speakers")
-def update_speaker_names(job_id: str, body: SpeakerNamesUpdate):
+def update_speaker_names(job_id: str, body: SpeakerNamesUpdate, _: str = Depends(require_auth)):
     job = _load_job(job_id)
     job["speaker_names"] = {**job.get("speaker_names", {}), **body.speaker_names}
     _save_job(job)
@@ -607,7 +687,7 @@ class SegmentsPatch(PydanticModel):
 
 
 @app.patch("/api/transcribe/{job_id}/segments")
-def patch_segments(job_id: str, body: SegmentsPatch):
+def patch_segments(job_id: str, body: SegmentsPatch, _: str = Depends(require_auth)):
     """Édite le texte et/ou le commentaire d'un ou plusieurs segments."""
     job = _load_job(job_id)
     utterances = job.get("utterances", [])
@@ -626,7 +706,7 @@ def patch_segments(job_id: str, body: SegmentsPatch):
 
 
 @app.post("/api/transcribe/{job_id}/share")
-def create_share(job_id: str):
+def create_share(job_id: str, _: str = Depends(require_auth)):
     job = _load_job(job_id)
     if job["status"] != "completed":
         raise HTTPException(status_code=409, detail="Transcription non terminée")
@@ -647,7 +727,7 @@ def get_shared(token: str):
 
 
 @app.get("/api/transcripts")
-def list_transcripts():
+def list_transcripts(_: str = Depends(require_auth)):
     return [
         {
             "id": j["id"],
@@ -670,7 +750,7 @@ def list_transcripts():
 
 
 @app.delete("/api/transcribe/{job_id}", status_code=204)
-def delete_job(job_id: str):
+def delete_job(job_id: str, _: str = Depends(require_auth)):
     p = _job_path(job_id)
     if not p.exists():
         raise HTTPException(status_code=404, detail="Job introuvable")
@@ -706,7 +786,7 @@ def _save_settings(settings: dict):
 
 
 @app.get("/api/settings")
-def get_settings():
+def get_settings(_: str = Depends(require_auth)):
     settings = _load_settings()
     settings["providers_available"] = {
         "anthropic": bool(ANTHROPIC_API_KEY),
@@ -722,7 +802,7 @@ class SettingsPatch(PydanticModel):
 
 
 @app.patch("/api/settings")
-def patch_settings(patch: SettingsPatch):
+def patch_settings(patch: SettingsPatch, _: str = Depends(require_auth)):
     settings = _load_settings()
     if patch.mcp_servers is not None:
         settings["mcp_servers"] = patch.mcp_servers
@@ -763,7 +843,7 @@ async def _run_analysis_task(job_id: str, provider: str, api_key: str, active_se
 
 
 @app.post("/api/transcribe/{job_id}/analyze", status_code=202)
-async def analyze_job(job_id: str, req: AnalyzeRequest, background_tasks: BackgroundTasks):
+async def analyze_job(job_id: str, req: AnalyzeRequest, background_tasks: BackgroundTasks, _: str = Depends(require_auth)):
     job = _load_job(job_id)
     if job["status"] != "completed":
         raise HTTPException(status_code=409, detail="Transcription non terminée")
