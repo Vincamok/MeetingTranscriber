@@ -1,13 +1,49 @@
 services:
+
+  # ── Backend CPU (profil par défaut) ────────────────────────────────────────
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    profiles: [cpu]
     restart: unless-stopped
     environment:
-      - ASSEMBLYAI_API_KEY=${ASSEMBLYAI_API_KEY}
+      - HF_TOKEN=${HF_TOKEN}
+      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:5173}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - transcriber_jobs:/tmp/transcriber/jobs
+      - whisper_cache:/root/.cache/huggingface
     ports:
       - "8000:8000"
 
+  # ── Backend GPU ─────────────────────────────────────────────────────────────
+  backend-gpu:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.gpu
+    profiles: [gpu]
+    restart: unless-stopped
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
+      - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:5173}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - transcriber_jobs:/tmp/transcriber/jobs
+      - whisper_cache:/root/.cache/huggingface
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
     build: ./frontend
     restart: unless-stopped
@@ -15,3 +51,7 @@ services:
       - "3000:80"
     depends_on:
       - backend
+
+volumes:
+  transcriber_jobs:
+  whisper_cache:
