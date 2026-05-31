@@ -27,13 +27,14 @@ import logging
 import os
 import secrets
 import subprocess
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
 import aiofiles
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Security, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Security, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -947,3 +948,133 @@ async def analyze_job(job_id: str, req: AnalyzeRequest, background_tasks: Backgr
     background_tasks.add_task(_run_analysis_task, job_id, provider, api_key, req.mcp_servers, req.template)
     log.info("analysis requested", extra={"job_id": job_id, "provider": provider, "template": req.template})
     return {"job_id": job_id, "analysis_status": "running"}
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — transcription temps réel
+# ---------------------------------------------------------------------------
+
+@app.websocket("/api/ws/transcribe")
+async def ws_transcribe(
+    websocket: WebSocket,
+    language: str = "auto",
+    token: Optional[str] = None,
+):
+    """
+    Transcription en temps réel pendant l'enregistrement.
+
+    Protocole client → serveur :
+      binary frame  : blob audio WebM complet (tous les chunks depuis le début)
+      text frame    : {"type": "stop"}
+
+    Protocole serveur → client :
+      {"type": "partial", "utterances": [...], "language": "fr"}
+      {"type": "error",   "message": "..."}
+      {"type": "stopped"}
+    """
+    # Auth JWT via query param (les WS ne supportent pas les headers custom)
+    if AUTH_ENABLED:
+        if not token:
+            await websocket.close(code=1008, reason="Token requis")
+            return
+        try:
+            _decode_token(token)
+        except HTTPException:
+            await websocket.close(code=1008, reason="Token invalide")
+            return
+
+    await websocket.accept()
+    log.info("ws_transcribe connected")
+
+    import asyncio
+
+    async def _transcribe_blob(audio_bytes: bytes) -> list[dict]:
+        """Transcrit un blob audio en utilisant un executor pour ne pas bloquer la boucle."""
+        tmp_webm = Path(tempfile.mktemp(suffix=".webm", dir=str(UPLOAD_DIR)))
+        tmp_wav  = tmp_webm.with_suffix(".wav")
+        try:
+            tmp_webm.write_bytes(audio_bytes)
+            # Conversion WebM → WAV 16kHz mono
+            try:
+                _extract_audio(tmp_webm, tmp_wav)
+                audio_path = tmp_wav
+            except Exception:
+                audio_path = tmp_webm
+
+            lang = None if language == "auto" else language
+
+            def _run_whisper():
+                segs, info = _whisper_model.transcribe(  # type: ignore[union-attr]
+                    str(audio_path),
+                    language=lang,
+                    word_timestamps=False,
+                    beam_size=1,
+                    vad_filter=True,
+                    condition_on_previous_text=False,
+                )
+                return list(segs), info
+
+            loop = asyncio.get_event_loop()
+            segments, info = await loop.run_in_executor(None, _run_whisper)
+
+            utterances = [
+                {
+                    "speaker": "SPEAKER_00",
+                    "start": _ms(seg.start),
+                    "end": _ms(seg.end),
+                    "text": seg.text.strip(),
+                    "words": [],
+                }
+                for seg in segments if seg.text.strip()
+            ]
+            return utterances, getattr(info, "language", language or "?")
+        finally:
+            tmp_webm.unlink(missing_ok=True)
+            tmp_wav.unlink(missing_ok=True)
+
+    try:
+        _load_models()
+        if not _whisper_model:
+            await websocket.send_json({"type": "error", "message": "Modèle Whisper non chargé"})
+            await websocket.close()
+            return
+
+        while True:
+            message = await websocket.receive()
+
+            if message["type"] == "websocket.disconnect":
+                break
+
+            # Blob audio binaire
+            if message.get("bytes"):
+                try:
+                    utterances, detected_lang = await _transcribe_blob(message["bytes"])
+                    await websocket.send_json({
+                        "type": "partial",
+                        "utterances": utterances,
+                        "language": detected_lang,
+                    })
+                except Exception as exc:
+                    log.warning("ws_transcribe chunk error", extra={"error": str(exc)})
+                    await websocket.send_json({"type": "error", "message": str(exc)})
+
+            # Message texte (commande)
+            elif message.get("text"):
+                try:
+                    data = json.loads(message["text"])
+                except json.JSONDecodeError:
+                    continue
+                if data.get("type") == "stop":
+                    await websocket.send_json({"type": "stopped"})
+                    break
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        log.exception("ws_transcribe error")
+        try:
+            await websocket.send_json({"type": "error", "message": str(exc)})
+        except Exception:
+            pass
+    finally:
+        log.info("ws_transcribe disconnected")

@@ -5,6 +5,17 @@ Format : [Semantic Versioning](https://semver.org/lang/fr/) — `MAJOR.MINOR.PAT
 
 ---
 
+## [0.8.0] — 2026-05-31
+
+### Ajouté
+- **Transcription temps réel** — `WS /api/ws/transcribe` reçoit des blobs audio cumulatifs toutes les 4s, transcrit avec Whisper (beam_size=1, VAD), renvoie les segments en JSON
+- **Affichage live pendant l'enregistrement** — transcript partiel affiché sous forme de segments horodatés en gris clair, remplacé par le résultat final diarisé après "Analyser"
+- Indicateur de connexion WebSocket avec point rouge animé
+- Auth JWT transmis via query param `?token=` pour les connexions WebSocket
+- Transcription non bloquante via `asyncio.run_in_executor` (Whisper s'exécute dans un thread séparé)
+
+---
+
 ## [0.7.0] — 2026-05-31
 
 ### Ajouté

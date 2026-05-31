@@ -49,9 +49,16 @@
 
 ---
 
-## Non planifié
+## [0.8.0] — Mode temps réel ✅ (livré)
 
-- [ ] **Support vidéo** — extraire la piste audio d'un fichier MP4/MKV via ffmpeg
-- [ ] **Webhook fin de job** — notifier une URL externe quand la transcription est terminée
-- [ ] **Mode temps réel** — transcription en streaming via WebSocket pendant l'enregistrement
-- [ ] **Export DOCX** — mise en forme Word avec styles par locuteur
+- [x] **Transcription temps réel** — WebSocket `/api/ws/transcribe`, blobs audio cumulatifs toutes les 4s
+- [x] **Affichage live** — segments horodatés en temps réel pendant l'enregistrement
+- [x] **Non-bloquant** — Whisper dans un executor thread, loop asyncio libre
+
+---
+
+## Non planifié (items obsolètes — déjà livrés dans des versions antérieures)
+
+- [x] ~~Support vidéo~~ — livré en v0.4.0
+- [x] ~~Webhook fin de job~~ — livré en v0.4.0
+- [x] ~~Export DOCX~~ — livré en v0.5.0

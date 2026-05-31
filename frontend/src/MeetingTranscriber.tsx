@@ -78,6 +78,9 @@ export default function MeetingTranscriber() {
   const [editSegmentValue, setEditSegmentValue] = useState("");
   const [commentingSegment, setCommentingSegment] = useState<number | null>(null);
   const [commentValue, setCommentValue] = useState("");
+  const [liveUtterances, setLiveUtterances] = useState<Utterance[]>([]);
+  const [liveLanguage, setLiveLanguage] = useState<string>("");
+  const [wsConnected, setWsConnected] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -91,6 +94,8 @@ export default function MeetingTranscriber() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const playerRef = useRef<HTMLAudioElement | null>(null);
   const playerSrcRef = useRef<string | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsSendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const drawWave = useCallback(() => {
     const canvas = canvasRef.current, analyzer = analyzerRef.current;
@@ -112,8 +117,40 @@ export default function MeetingTranscriber() {
     }; frame();
   }, []);
 
+  const _connectWs = (lang: string) => {
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    const host = window.location.host;
+    const token = localStorage.getItem("minta_jwt") ?? "";
+    const url = `${proto}://${host}/api/ws/transcribe?language=${lang}${token ? `&token=${token}` : ""}`;
+    const ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => setWsConnected(true);
+    ws.onclose = () => { setWsConnected(false); wsRef.current = null; };
+    ws.onerror = () => setWsConnected(false);
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data as string);
+        if (msg.type === "partial" && Array.isArray(msg.utterances)) {
+          setLiveUtterances(msg.utterances);
+          if (msg.language) setLiveLanguage(msg.language);
+        }
+      } catch { /* ignore */ }
+    };
+    wsRef.current = ws;
+  };
+
+  const _disconnectWs = () => {
+    if (wsSendIntervalRef.current) { clearInterval(wsSendIntervalRef.current); wsSendIntervalRef.current = null; }
+    if (wsRef.current) {
+      try { wsRef.current.send(JSON.stringify({ type: "stop" })); } catch { /* ignore */ }
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setWsConnected(false);
+  };
+
   const startRecording = async () => {
-    setError("");
+    setError(""); setLiveUtterances([]); setLiveLanguage("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioCtxRef.current = new AudioContext();
@@ -121,24 +158,41 @@ export default function MeetingTranscriber() {
       analyzerRef.current.fftSize = 256;
       audioCtxRef.current.createMediaStreamSource(stream).connect(analyzerRef.current);
       drawWave();
-      mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
-      mediaRecorderRef.current.ondataavailable = (e) => audioChunksRef.current.push(e.data);
+      mediaRecorderRef.current = new MediaRecorder(stream);
+      mediaRecorderRef.current.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
       mediaRecorderRef.current.onstop = () => {
         audioBlobRef.current = new Blob(audioChunksRef.current, { type: "audio/webm" });
         uploadedFileRef.current = null; setUploadedFileName(""); setHasAudio(true);
         setStatus("Enregistrement terminé");
       };
-      mediaRecorderRef.current.start();
+      // Collecte les chunks toutes les 200ms pour construire des blobs cumulatifs
+      mediaRecorderRef.current.start(200);
       setIsRecording(true); setSeconds(0);
       timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
       setStatus("Enregistrement en cours...");
+
+      // Connexion WebSocket et envoi du blob cumulatif toutes les 4s
+      _connectWs(language);
+      wsSendIntervalRef.current = setInterval(() => {
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const chunks = audioChunksRef.current;
+        if (chunks.length === 0) return;
+        const blob = new Blob(chunks, { type: "audio/webm" });
+        blob.arrayBuffer().then((buf) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(buf);
+        });
+      }, 4000);
     } catch (e: unknown) {
       setError("Accès micro refusé : " + (e instanceof Error ? e.message : String(e)));
     }
   };
 
   const stopRecording = () => {
+    _disconnectWs();
     mediaRecorderRef.current?.stop();
     mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop());
     if (timerRef.current) clearInterval(timerRef.current);
@@ -297,7 +351,13 @@ export default function MeetingTranscriber() {
     if (timerRef.current) clearInterval(timerRef.current);
     if (pollRef.current) clearInterval(pollRef.current);
     if (playerSrcRef.current) URL.revokeObjectURL(playerSrcRef.current);
+    _disconnectWs();
   }, []);
+
+  // Quand le job est complété, on efface le live transcript (remplacé par le résultat final)
+  useEffect(() => {
+    if (job?.status === "completed") setLiveUtterances([]);
+  }, [job?.status]);
 
   const utterances = job?.utterances ?? [];
   const speakers = job?.speakers ?? [];
@@ -439,12 +499,36 @@ export default function MeetingTranscriber() {
           </div>
         )}
 
-        {utterances.length === 0 ? (
+        {/* Live transcript (pendant l'enregistrement) */}
+        {utterances.length === 0 && liveUtterances.length > 0 && (
+          <div style={{ marginBottom: "1rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#E24B4A", animation: "pulse 1s infinite" }} />
+              <span style={{ fontSize: 12, color: "#666" }}>
+                Transcription en direct{liveLanguage ? ` · ${liveLanguage}` : ""}
+                {wsConnected ? "" : " · en attente…"}
+              </span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2, opacity: 0.9 }}>
+              {liveUtterances.map((u, idx) => (
+                <div key={idx} style={{ display: "flex", gap: 12, padding: "8px 12px", borderRadius: 8, background: "#f9f9f9" }}>
+                  <div style={{ flexShrink: 0, width: 70, fontSize: 11, fontFamily: "monospace", color: "#aaa", paddingTop: 2 }}>{fmtMs(u.start)}</div>
+                  <div style={{ fontSize: 14, color: "#444", lineHeight: 1.6, flex: 1 }}>{u.text}</div>
+                </div>
+              ))}
+            </div>
+            <p style={{ fontSize: 11, color: "#aaa", marginTop: 8 }}>
+              Aperçu temps réel — la transcription finale avec identification des locuteurs sera disponible après avoir cliqué sur "Analyser".
+            </p>
+          </div>
+        )}
+
+        {utterances.length === 0 && liveUtterances.length === 0 ? (
           <div style={{ textAlign: "center", padding: "2rem", color: "#aaa", fontSize: 14 }}>
             <div style={{ fontSize: 32, marginBottom: 8 }}>🎤</div>
             Enregistrez ou importez un fichier audio/vidéo, puis cliquez sur Analyser
           </div>
-        ) : (
+        ) : utterances.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             {utterances.map((u, idx) => {
               const si = speakerMap[u.speaker] ?? 0;
@@ -538,7 +622,7 @@ export default function MeetingTranscriber() {
               );
             })}
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* Analyse IA */}
