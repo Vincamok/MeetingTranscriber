@@ -1,28 +1,40 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
 const SPEAKER_COLORS = [
-  { bg: "#E6F1FB", text: "#0C447C", label: "blue" },
-  { bg: "#EAF3DE", text: "#3B6D11", label: "green" },
-  { bg: "#FAEEDA", text: "#854F0B", label: "amber" },
-  { bg: "#FBEAF0", text: "#72243E", label: "pink" },
-  { bg: "#EEEDFE", text: "#3C3489", label: "purple" },
+  { bg: "#E6F1FB", text: "#0C447C" },
+  { bg: "#EAF3DE", text: "#3B6D11" },
+  { bg: "#FAEEDA", text: "#854F0B" },
+  { bg: "#FBEAF0", text: "#72243E" },
+  { bg: "#EEEDFE", text: "#3C3489" },
 ];
 
 const SPEAKER_NAMES = ["Locuteur A", "Locuteur B", "Locuteur C", "Locuteur D", "Locuteur E"];
+
+interface Word {
+  text: string;
+  start: number;
+  end: number;
+}
 
 interface Utterance {
   speaker: string;
   start: number;
   end: number;
   text: string;
-  words: { text: string; start: number; end: number }[];
+  words: Word[];
 }
 
-interface TranscriptResult {
+interface Job {
+  id: string;
+  status: "processing" | "completed" | "error";
   utterances: Utterance[];
   text: string;
-  status: string;
-  error?: string;
+  speakers: string[];
+  duration_ms: number;
+  word_count: number;
+  error?: string | null;
+  queue_position?: number;
+  message?: string;
 }
 
 function fmtMs(ms: number): string {
@@ -38,7 +50,6 @@ function fmtSec(s: number): string {
 }
 
 export default function MeetingTranscriber() {
-  const [apiKey, setApiKey] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [hasAudio, setHasAudio] = useState(false);
@@ -48,7 +59,8 @@ export default function MeetingTranscriber() {
   const [progressLabel, setProgressLabel] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState("");
-  const [transcript, setTranscript] = useState<TranscriptResult | null>(null);
+  const [job, setJob] = useState<Job | null>(null);
+  const [queueMessage, setQueueMessage] = useState("");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -59,6 +71,7 @@ export default function MeetingTranscriber() {
   const analyzerRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number>(0);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const drawWave = useCallback(() => {
     const canvas = canvasRef.current;
@@ -144,71 +157,88 @@ export default function MeetingTranscriber() {
     new Audio(url).play();
   };
 
+  const pollJob = useCallback((jobId: string) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const resp = await fetch(`/api/transcribe/${jobId}`);
+        if (!resp.ok) return;
+        const data: Job = await resp.json();
+        if (data.status === "completed" || data.status === "error") {
+          clearInterval(pollRef.current!);
+          setProgress(100);
+          setProgressLabel(data.status === "completed" ? "Terminé !" : "Erreur");
+          setAnalyzing(false);
+          if (data.status === "error") setError("Erreur pipeline : " + (data.error ?? "inconnue"));
+          setJob(data);
+        } else {
+          setProgressLabel("Transcription en cours...");
+          setProgress((p) => Math.min(p + 3, 90));
+        }
+      } catch {
+        // réseau — on réessaie au prochain tick
+      }
+    }, 3000);
+  }, []);
+
   const analyzeAudio = async () => {
-    if (!apiKey || apiKey.length < 10) { setError("Entrez votre clé API AssemblyAI."); return; }
     const fileToSend = uploadedFileRef.current || audioBlobRef.current;
     if (!fileToSend) { setError("Aucun audio disponible."); return; }
 
     setError("");
+    setJob(null);
+    setQueueMessage("");
     setAnalyzing(true);
-    setProgress(5);
+    setProgress(10);
     setProgressLabel("Upload du fichier audio...");
 
     try {
-      const uploadResp = await fetch("https://api.assemblyai.com/v2/upload", {
-        method: "POST",
-        headers: { authorization: apiKey, "Content-Type": "application/octet-stream" },
-        body: fileToSend,
-      });
-      if (!uploadResp.ok) throw new Error(`Upload échoué: ${uploadResp.status}`);
-      const { upload_url } = await uploadResp.json();
-      setProgress(30);
-      setProgressLabel("Transcription et diarisation en cours...");
+      const form = new FormData();
+      form.append("file", fileToSend, uploadedFileRef.current?.name ?? "recording.webm");
 
-      const transcriptResp = await fetch("https://api.assemblyai.com/v2/transcript", {
-        method: "POST",
-        headers: { authorization: apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ audio_url: upload_url, speaker_labels: true, language_code: "fr" }),
-      });
-      if (!transcriptResp.ok) throw new Error(`Transcription échouée: ${transcriptResp.status}`);
-      const { id } = await transcriptResp.json();
-
-      let result: TranscriptResult & { status: string };
-      let attempts = 0;
-      while (true) {
-        await new Promise((r) => setTimeout(r, 2500));
-        const poll = await fetch(`https://api.assemblyai.com/v2/transcript/${id}`, {
-          headers: { authorization: apiKey },
-        });
-        result = await poll.json();
-        attempts++;
-        setProgress(Math.min(30 + attempts * 8, 92));
-        setProgressLabel(`Traitement (${result.status})...`);
-        if (result.status === "completed" || result.status === "error") break;
-        if (attempts > 40) throw new Error("Timeout");
+      const uploadResp = await fetch("/api/upload", { method: "POST", body: form });
+      if (!uploadResp.ok) {
+        const detail = await uploadResp.json().catch(() => ({ detail: uploadResp.statusText }));
+        throw new Error(detail.detail ?? uploadResp.statusText);
       }
+      const data = await uploadResp.json();
+      setProgress(30);
+      setProgressLabel(data.message ?? "Transcription démarrée...");
+      if (data.queue_position > 0) setQueueMessage(data.message);
 
-      if (result!.status === "error") throw new Error(result!.error);
-      setProgress(100);
-      setProgressLabel("Terminé !");
-      setTranscript(result!);
+      pollJob(data.id);
     } catch (e: unknown) {
       setError("Erreur : " + (e instanceof Error ? e.message : String(e)));
-    } finally {
       setAnalyzing(false);
     }
   };
 
-  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+  const exportTranscript = async (format: "txt" | "srt" | "json") => {
+    if (!job) return;
+    const resp = await fetch(`/api/transcribe/${job.id}/export?format=${format}`);
+    if (!resp.ok) return;
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `transcription.${format}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
-  const utterances = transcript?.utterances || [];
-  const speakers = [...new Set(utterances.map((u) => u.speaker))];
+  useEffect(() => () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (pollRef.current) clearInterval(pollRef.current);
+  }, []);
+
+  const utterances = job?.utterances ?? [];
+  const speakers = job?.speakers ?? [];
   const speakerMap = Object.fromEntries(speakers.map((s, i) => [s, i]));
-  const totalWords = utterances.reduce((acc, u) => acc + u.words.length, 0);
-  const duration = utterances.length > 0 ? Math.round(utterances[utterances.length - 1].end / 1000) : 0;
+  const totalWords = job?.word_count ?? 0;
+  const duration = job?.duration_ms ? Math.round(job.duration_ms / 1000) : 0;
 
-  const m = String(Math.floor(seconds / 60)).padStart(2, "0");
-  const s = String(seconds % 60).padStart(2, "0");
+  const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
+  const ss = String(seconds % 60).padStart(2, "0");
 
   return (
     <div style={{ padding: "1.5rem 0", fontFamily: "system-ui, sans-serif", maxWidth: 680 }}>
@@ -216,26 +246,8 @@ export default function MeetingTranscriber() {
       <div style={{ marginBottom: "1.5rem" }}>
         <h1 style={{ fontSize: 20, fontWeight: 500, margin: 0 }}>🎙 Meeting Transcriber</h1>
         <p style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
-          Enregistrement, séparation des voix et transcription horodatée
+          Transcription locale — faster-whisper + pyannote, 100% auto-hébergé
         </p>
-      </div>
-
-      {/* API Key */}
-      <div style={{ display: "flex", gap: 8, marginBottom: "1.5rem", alignItems: "center" }}>
-        <input
-          type="password"
-          placeholder="Clé API AssemblyAI"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "0.5px solid #ccc", fontSize: 13, fontFamily: "monospace" }}
-        />
-        <span style={{
-          fontSize: 11, padding: "3px 8px", borderRadius: 20, fontWeight: 500,
-          background: apiKey.length > 10 ? "#EAF3DE" : "#FCEBEB",
-          color: apiKey.length > 10 ? "#3B6D11" : "#A32D2D",
-        }}>
-          {apiKey.length > 10 ? "Connecté" : "Non connecté"}
-        </span>
       </div>
 
       {/* Recorder */}
@@ -245,7 +257,7 @@ export default function MeetingTranscriber() {
             width: 10, height: 10, borderRadius: "50%", background: "#D85A30", flexShrink: 0,
             animation: isRecording ? "pulse 1s infinite" : "none",
           }} />
-          <span style={{ fontSize: 22, fontWeight: 500, fontFamily: "monospace", letterSpacing: 2 }}>{m}:{s}</span>
+          <span style={{ fontSize: 22, fontWeight: 500, fontFamily: "monospace", letterSpacing: 2 }}>{mm}:{ss}</span>
           <span style={{ fontSize: 13, color: "#666", marginLeft: "auto" }}>{status}</span>
         </div>
 
@@ -262,7 +274,8 @@ export default function MeetingTranscriber() {
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", fontSize: 13, borderRadius: 8, border: "0.5px solid #ccc", background: "transparent", cursor: !isRecording ? "not-allowed" : "pointer", opacity: !isRecording ? 0.4 : 1 }}>
             ⏹ Arrêter
           </button>
-          <button onClick={playback} disabled={!hasAudio} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", fontSize: 13, borderRadius: 8, border: "0.5px solid #ccc", background: "transparent", cursor: !hasAudio ? "not-allowed" : "pointer", opacity: !hasAudio ? 0.4 : 1 }}>
+          <button onClick={playback} disabled={!hasAudio}
+            style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", fontSize: 13, borderRadius: 8, border: "0.5px solid #ccc", background: "transparent", cursor: !hasAudio ? "not-allowed" : "pointer", opacity: !hasAudio ? 0.4 : 1 }}>
             ▶ Écouter
           </button>
           <button onClick={analyzeAudio} disabled={!hasAudio || analyzing}
@@ -289,10 +302,22 @@ export default function MeetingTranscriber() {
         <p style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>MP3, WAV, M4A, WEBM — jusqu'à 100MB</p>
         {uploadedFileName && <p style={{ fontSize: 13, fontWeight: 500, marginTop: 4 }}>{uploadedFileName}</p>}
       </div>
-      <input type="file" id="fileInput" accept="audio/*" style={{ display: "none" }} onChange={(e) => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }} />
+      <input type="file" id="fileInput" accept="audio/*" style={{ display: "none" }}
+        onChange={(e) => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }} />
+
+      {/* Queue notice */}
+      {queueMessage && !error && (
+        <div style={{ background: "#FFF8E1", border: "0.5px solid #FFD54F", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#795B00", margin: "0.5rem 0" }}>
+          ⏳ {queueMessage}
+        </div>
+      )}
 
       {/* Error */}
-      {error && <div style={{ background: "#FCEBEB", border: "0.5px solid #F09595", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#A32D2D", margin: "0.5rem 0" }}>{error}</div>}
+      {error && (
+        <div style={{ background: "#FCEBEB", border: "0.5px solid #F09595", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#A32D2D", margin: "0.5rem 0" }}>
+          {error}
+        </div>
+      )}
 
       {/* Progress */}
       {analyzing && (
@@ -306,20 +331,35 @@ export default function MeetingTranscriber() {
 
       {/* Transcript */}
       <div style={{ marginTop: "1.5rem" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem", flexWrap: "wrap", gap: 8 }}>
           <h2 style={{ fontSize: 16, fontWeight: 500, margin: 0 }}>📋 Transcription</h2>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             {speakers.map((s, i) => (
               <span key={s} style={{ fontSize: 11, fontWeight: 500, padding: "2px 8px", borderRadius: 20, background: SPEAKER_COLORS[i % SPEAKER_COLORS.length].bg, color: SPEAKER_COLORS[i % SPEAKER_COLORS.length].text }}>
                 {SPEAKER_NAMES[i] || `Locuteur ${s}`}
               </span>
             ))}
+            {utterances.length > 0 && (
+              <>
+                {(["txt", "srt", "json"] as const).map((fmt) => (
+                  <button key={fmt} onClick={() => exportTranscript(fmt)}
+                    style={{ padding: "3px 10px", fontSize: 11, borderRadius: 6, border: "0.5px solid #bbb", background: "transparent", cursor: "pointer" }}>
+                    ↓ {fmt.toUpperCase()}
+                  </button>
+                ))}
+              </>
+            )}
           </div>
         </div>
 
         {utterances.length > 0 && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: "1rem" }}>
-            {[{ label: "Locuteurs", val: speakers.length }, { label: "Mots", val: totalWords }, { label: "Durée", val: fmtSec(duration) }, { label: "Segments", val: utterances.length }].map(({ label, val }) => (
+            {[
+              { label: "Locuteurs", val: speakers.length },
+              { label: "Mots", val: totalWords },
+              { label: "Durée", val: fmtSec(duration) },
+              { label: "Segments", val: utterances.length },
+            ].map(({ label, val }) => (
               <div key={label} style={{ background: "#f5f5f5", borderRadius: 8, padding: "10px 12px" }}>
                 <div style={{ fontSize: 11, color: "#666", marginBottom: 2 }}>{label}</div>
                 <div style={{ fontSize: 18, fontWeight: 500 }}>{val}</div>
@@ -339,7 +379,7 @@ export default function MeetingTranscriber() {
               const si = speakerMap[u.speaker] ?? 0;
               const color = SPEAKER_COLORS[si % SPEAKER_COLORS.length];
               return (
-                <div key={idx} style={{ display: "flex", gap: 12, padding: "10px 12px", borderRadius: 8, border: "0.5px solid transparent", transition: "background 0.1s" }}>
+                <div key={idx} style={{ display: "flex", gap: 12, padding: "10px 12px", borderRadius: 8 }}>
                   <div style={{ flexShrink: 0, width: 80 }}>
                     <div style={{ fontSize: 11, fontFamily: "monospace", color: "#888", marginBottom: 4 }}>{fmtMs(u.start)}</div>
                     <span style={{ fontSize: 11, fontWeight: 500, padding: "2px 8px", borderRadius: 20, background: color.bg, color: color.text }}>
