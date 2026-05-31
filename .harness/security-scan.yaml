@@ -1,0 +1,252 @@
+# Minta — scans sécurité (Trivy + OWASP Dependency-Check).
+# Ordre recommandé : pullrepo_github → build-all → security-scan
+# Registry : 192.168.200.45:3000 (token bearer via HTTP interne, pas https://harness.vincz.fr:443).
+# Rapports : reports/security/<timestamp>/ puis commit Gitness ([skip ci]).
+kind: pipeline
+spec:
+  stages:
+    - name: security_scan
+      type: ci
+      spec:
+        cloneCodebase: true
+        steps:
+
+          # ------------------------------------------------------------------ #
+          # 1. Trivy — filesystem (repo) + images registry                     #
+          # ------------------------------------------------------------------ #
+          - name: scan_trivy
+            type: run
+            timeout: 20m
+            spec:
+              container:
+                image: aquasec/trivy:0.61.0
+                entrypoint: /bin/sh
+                pull: if-not-exists
+              shell: Sh
+              envs:
+                REGISTRY_USER: ${{ secrets.get('harness_user') }}
+                REGISTRY_TOKEN: ${{ secrets.get('harness_token') }}
+                REGISTRY_HOST: "192.168.200.45:3000"
+                IMAGE_BASE: "vincent/minta"
+                FAIL_ON_SEVERITY: "HIGH"
+              script: |-
+                set -eu
+                if [ -d /gitness ]; then cd /gitness; elif [ -d /harness ]; then cd /harness; fi
+                WORKDIR="$(pwd)"
+                echo "==> Scan Trivy depuis ${WORKDIR}"
+
+                REPORT_DIR="reports/security/$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+                mkdir -p "${REPORT_DIR}" reports/security
+                echo "${REPORT_DIR}" > reports/security/.last-run
+
+                mkdir -p /tmp/trivy-cache
+                export TRIVY_CACHE_DIR=/tmp/trivy-cache
+                export TRIVY_INSECURE=true
+                export TRIVY_DISABLE_VEX_NOTICE=true
+
+                IGNORE_FILE="${WORKDIR}/.trivyignore.yaml"
+                # Créer un fichier vide si absent pour éviter l'erreur --ignorefile
+                [ -f "${IGNORE_FILE}" ] || touch "${IGNORE_FILE}"
+
+                TRIVY_FAIL=0
+                FS_SKIP="--skip-dirs node_modules,.git,.venv,__pycache__,frontend/node_modules"
+
+                # ── Filesystem : rapport JSON (vuln + misconfig) ─────────────
+                echo "==> [1/5] Rapport JSON filesystem..."
+                export TRIVY_USERNAME="${REGISTRY_USER}"
+                export TRIVY_PASSWORD="${REGISTRY_TOKEN}"
+                trivy fs \
+                  --scanners vuln,misconfig \
+                  --format json \
+                  --severity "${FAIL_ON_SEVERITY},CRITICAL" \
+                  --ignorefile "${IGNORE_FILE}" \
+                  ${FS_SKIP} \
+                  --output "${REPORT_DIR}/trivy-fs.json" \
+                  "${WORKDIR}" || true
+                unset TRIVY_USERNAME TRIVY_PASSWORD
+
+                # ── Filesystem : gate (vuln + secret + misconfig) ────────────
+                echo "==> [2/5] Gate filesystem..."
+                export TRIVY_USERNAME="${REGISTRY_USER}"
+                export TRIVY_PASSWORD="${REGISTRY_TOKEN}"
+                trivy fs \
+                  --scanners vuln,secret,misconfig \
+                  --severity "${FAIL_ON_SEVERITY},CRITICAL" \
+                  --exit-code 1 \
+                  --ignorefile "${IGNORE_FILE}" \
+                  ${FS_SKIP} \
+                  "${WORKDIR}" || TRIVY_FAIL=1
+                unset TRIVY_USERNAME TRIVY_PASSWORD
+
+                # ── Helper : récupère un bearer token depuis le registry HTTP ─
+                # Le registry redirige vers https://harness.vincz.fr:443 pour
+                # l'auth standard ; on contourne via l'endpoint HTTP interne.
+                registry_bearer_token() {
+                  _img="$1"
+                  _scope="repository:${IMAGE_BASE}/${_img}:pull"
+                  _url="http://${REGISTRY_HOST}/v2/token?service=gitness-registry&scope=${_scope}"
+                  _raw=""
+                  if command -v wget >/dev/null 2>&1; then
+                    _raw="$(wget -qO- --user="${REGISTRY_USER}" --password="${REGISTRY_TOKEN}" "${_url}" 2>/dev/null || true)"
+                  elif command -v curl >/dev/null 2>&1; then
+                    _raw="$(curl -fsS -u "${REGISTRY_USER}:${REGISTRY_TOKEN}" "${_url}" 2>/dev/null || true)"
+                  elif command -v busybox >/dev/null 2>&1; then
+                    _raw="$(busybox wget -qO- --user="${REGISTRY_USER}" --password="${REGISTRY_TOKEN}" "${_url}" 2>/dev/null || true)"
+                  fi
+                  printf '%s' "${_raw}" | tr -d '\n' | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'
+                }
+
+                # ── Images : rapport JSON + gate ─────────────────────────────
+                STEP=3
+                for img in backend backend-gpu frontend; do
+                  ref="${REGISTRY_HOST}/${IMAGE_BASE}/${img}:latest"
+                  echo "==> [${STEP}/5] Image ${img}..."
+                  STEP=$((STEP + 1))
+
+                  TOKEN="$(registry_bearer_token "${img}")"
+                  if [ -z "${TOKEN}" ]; then
+                    echo "AVERTISSEMENT: token bearer introuvable pour ${img}, scan ignoré" >&2
+                    TRIVY_FAIL=1
+                    continue
+                  fi
+
+                  IMG_FLAGS="--image-src remote --insecure --registry-token ${TOKEN} \
+                    --scanners vuln --pkg-types os,library \
+                    --severity ${FAIL_ON_SEVERITY},CRITICAL \
+                    --ignore-unfixed \
+                    --ignorefile ${IGNORE_FILE}"
+
+                  # Rapport JSON
+                  # shellcheck disable=SC2086
+                  trivy image ${IMG_FLAGS} \
+                    --format json \
+                    --output "${REPORT_DIR}/trivy-${img}.json" \
+                    "${ref}" || true
+
+                  # Gate
+                  # shellcheck disable=SC2086
+                  trivy image ${IMG_FLAGS} \
+                    --exit-code 1 \
+                    "${ref}" || TRIVY_FAIL=1
+                done
+
+                # ── Résumé partiel ───────────────────────────────────────────
+                {
+                  printf '# Rapport sécurité %s\n\n' "${REPORT_DIR}"
+                  printf '- Horodatage (UTC) : %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  printf '- Gate Trivy       : %s\n' "$([ "${TRIVY_FAIL}" -eq 0 ] && echo pass || echo FAIL)"
+                  printf '- Dossier          : %s\n' "${REPORT_DIR}"
+                } > "${REPORT_DIR}/summary.md"
+
+                echo "==> Rapports Trivy écrits dans ${REPORT_DIR}"
+                if [ "${TRIVY_FAIL}" -ne 0 ]; then
+                  echo "==> Gate Trivy : ECHEC" >&2
+                  exit 1
+                fi
+                echo "==> Gate Trivy OK"
+
+          # ------------------------------------------------------------------ #
+          # 2. OWASP Dependency-Check                                           #
+          # ------------------------------------------------------------------ #
+          - name: scan_owasp
+            type: run
+            when: always()
+            timeout: 90m
+            spec:
+              container:
+                image: owasp/dependency-check:12.1.0
+                entrypoint: /bin/sh
+                pull: if-not-exists
+              shell: Sh
+              envs:
+                FAIL_ON_CVSS: "7"
+              script: |-
+                set -eu
+                if [ -d /gitness ]; then cd /gitness; elif [ -d /harness ]; then cd /harness; fi
+
+                if [ ! -f reports/security/.last-run ]; then
+                  echo "==> OWASP ignoré : .last-run absent (Trivy n'a pas démarré)" >&2
+                  exit 0
+                fi
+                REPORT_DIR="$(cat reports/security/.last-run)"
+                echo "==> OWASP Dependency-Check → ${REPORT_DIR}"
+
+                OUT="/tmp/owasp-out"
+                OWASP_DATA="/tmp/owasp-data"
+                mkdir -p "${OUT}" "${OWASP_DATA}"
+                OWASP_FAIL=0
+
+                /usr/share/dependency-check/bin/dependency-check.sh \
+                  --scan "." \
+                  --format "JSON" \
+                  --out "${OUT}" \
+                  --data "${OWASP_DATA}" \
+                  --failOnCVSS "${FAIL_ON_CVSS}" \
+                  --exclude "**/node_modules/**" \
+                  --exclude "**/.git/**" \
+                  --exclude "**/__pycache__/**" \
+                  --exclude "**/.venv/**" || OWASP_FAIL=1
+
+                if [ -f "${OUT}/dependency-check-report.json" ]; then
+                  cp "${OUT}/dependency-check-report.json" "${REPORT_DIR}/owasp.json"
+                else
+                  printf '{"error":"dependency-check did not produce a report"}\n' \
+                    > "${REPORT_DIR}/owasp.json"
+                  OWASP_FAIL=1
+                fi
+
+                printf '- Gate OWASP       : %s\n' \
+                  "$([ "${OWASP_FAIL}" -eq 0 ] && echo pass || echo FAIL)" \
+                  >> "${REPORT_DIR}/summary.md"
+
+                if [ "${OWASP_FAIL}" -ne 0 ]; then
+                  echo "==> Gate OWASP : ECHEC" >&2
+                  exit 1
+                fi
+                echo "==> Gate OWASP OK"
+
+          # ------------------------------------------------------------------ #
+          # 3. Commit + push des rapports dans Gitness ([skip ci])              #
+          # ------------------------------------------------------------------ #
+          - name: publish_reports
+            type: run
+            when: always()
+            spec:
+              container:
+                image: alpine/git
+                pull: if-not-exists
+              shell: Sh
+              envs:
+                HARNESS_GIT_HOST: "http://192.168.200.45:3000"
+                HARNESS_GIT_PATH: "git/vincent/MeetingTranscriber"
+                HARNESS_USER: ${{ secrets.get('harness_user') }}
+                HARNESS_TOKEN: ${{ secrets.get('harness_token') }}
+              script: |-
+                set -eu
+                if [ -d /gitness ]; then cd /gitness; elif [ -d /harness ]; then cd /harness; fi
+
+                if [ ! -f reports/security/.last-run ]; then
+                  echo "==> Aucun rapport à publier" >&2
+                  exit 0
+                fi
+                REPORT_DIR="$(cat reports/security/.last-run)"
+
+                git config user.name  "Harness Security Bot"
+                git config user.email "security-scan@harness.local"
+
+                git add reports/security/
+                if git diff --staged --quiet; then
+                  echo "==> Rien de nouveau à committer sous reports/security/"
+                  exit 0
+                fi
+
+                BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+                TS="$(basename "${REPORT_DIR}")"
+                git commit -m "chore(security): rapports scan ${TS} [skip ci]"
+
+                # Construire l'URL de push sans exposer le token dans les logs
+                HOST="${HARNESS_GIT_HOST#http://}"
+                PUSH_URL="http://${HARNESS_USER}:${HARNESS_TOKEN}@${HOST}/${HARNESS_GIT_PATH}.git"
+                echo "==> Push ${BRANCH} vers ${HARNESS_GIT_HOST}/${HARNESS_GIT_PATH}"
+                git push "${PUSH_URL}" "HEAD:${BRANCH}"
+                echo "==> Rapports publiés : ${REPORT_DIR}"

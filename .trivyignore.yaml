@@ -1,0 +1,11 @@
+# Trivy ignore file — ajouter ici les CVE à supprimer manuellement.
+# Format : https://aquasecurity.github.io/trivy/latest/docs/configuration/filtering/#trivyignoreyaml
+#
+# Exemple :
+# vulnerabilities:
+#   - id: CVE-2023-XXXXX
+#     statement: "Non exploitable dans notre contexte (pas d'exposition réseau)"
+#     expiry: "2026-12-31"
+vulnerabilities: []
+misconfigurations: []
+secrets: []

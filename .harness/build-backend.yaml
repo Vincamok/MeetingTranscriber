@@ -1,0 +1,31 @@
+# Minta — build unitaire : backend CPU
+# Registry : 192.168.200.45:3000  →  vincent/minta/backend:latest
+kind: pipeline
+spec:
+  stages:
+    - name: build_backend
+      type: ci
+      spec:
+        cloneCodebase: true
+        steps:
+          - name: push_backend
+            type: run
+            spec:
+              container: gcr.io/kaniko-project/executor:debug
+              shell: Sh
+              envs:
+                REGISTRY_PASSWORD: ${{ secrets.get('harness_token') }}
+                REGISTRY_USER: ${{ secrets.get('harness_user') }}
+                REGISTRY_HOST: "192.168.200.45:3000"
+                IMAGE_BASE: "vincent/minta"
+              script: |-
+                mkdir -p /root
+                set -eu
+                if [ -d /gitness ]; then cd /gitness; elif [ -d /harness ]; then cd /harness; fi
+                echo "==> backend CPU"
+                mkdir -p /kaniko/.docker
+                echo "{\"auths\":{\"$REGISTRY_HOST\":{\"username\":\"$REGISTRY_USER\",\"password\":\"$REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+                /kaniko/executor --insecure --skip-tls-verify \
+                  --context=dir://. --dockerfile=backend/Dockerfile \
+                  --destination=$REGISTRY_HOST/$IMAGE_BASE/backend:latest
+                echo "==> Terminé : $REGISTRY_HOST/$IMAGE_BASE/backend:latest"

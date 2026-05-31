@@ -1,0 +1,82 @@
+# Minta — build global : enchaîne les 3 images (Kaniko).
+# Pipelines unitaires : build-backend.yaml, build-backend-gpu.yaml, build-frontend.yaml
+# Prérequis : pullrepo_github. Registry : 192.168.200.45:3000
+kind: pipeline
+spec:
+  stages:
+    - name: build_backend
+      type: ci
+      spec:
+        cloneCodebase: true
+        steps:
+          - name: push_backend
+            type: run
+            spec:
+              container: gcr.io/kaniko-project/executor:debug
+              shell: Sh
+              envs:
+                REGISTRY_PASSWORD: ${{ secrets.get('harness_token') }}
+                REGISTRY_USER: ${{ secrets.get('harness_user') }}
+                REGISTRY_HOST: "192.168.200.45:3000"
+                IMAGE_BASE: "vincent/minta"
+              script: |-
+                mkdir -p /root
+                set -eu
+                if [ -d /gitness ]; then cd /gitness; elif [ -d /harness ]; then cd /harness; fi
+                echo "==> [1/3] backend CPU"
+                mkdir -p /kaniko/.docker
+                echo "{\"auths\":{\"$REGISTRY_HOST\":{\"username\":\"$REGISTRY_USER\",\"password\":\"$REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+                /kaniko/executor --insecure --skip-tls-verify \
+                  --context=dir://. --dockerfile=backend/Dockerfile \
+                  --destination=$REGISTRY_HOST/$IMAGE_BASE/backend:latest
+
+    - name: build_backend_gpu
+      type: ci
+      spec:
+        cloneCodebase: true
+        steps:
+          - name: push_backend_gpu
+            type: run
+            spec:
+              container: gcr.io/kaniko-project/executor:debug
+              shell: Sh
+              envs:
+                REGISTRY_PASSWORD: ${{ secrets.get('harness_token') }}
+                REGISTRY_USER: ${{ secrets.get('harness_user') }}
+                REGISTRY_HOST: "192.168.200.45:3000"
+                IMAGE_BASE: "vincent/minta"
+              script: |-
+                set -eu
+                if [ -d /gitness ]; then cd /gitness; elif [ -d /harness ]; then cd /harness; fi
+                echo "==> [2/3] backend GPU"
+                mkdir -p /kaniko/.docker
+                echo "{\"auths\":{\"$REGISTRY_HOST\":{\"username\":\"$REGISTRY_USER\",\"password\":\"$REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+                /kaniko/executor --insecure --skip-tls-verify \
+                  --context=dir://. --dockerfile=backend/Dockerfile.gpu \
+                  --destination=$REGISTRY_HOST/$IMAGE_BASE/backend-gpu:latest
+
+    - name: build_frontend
+      type: ci
+      spec:
+        cloneCodebase: true
+        steps:
+          - name: push_frontend
+            type: run
+            spec:
+              container: gcr.io/kaniko-project/executor:debug
+              shell: Sh
+              envs:
+                REGISTRY_PASSWORD: ${{ secrets.get('harness_token') }}
+                REGISTRY_USER: ${{ secrets.get('harness_user') }}
+                REGISTRY_HOST: "192.168.200.45:3000"
+                IMAGE_BASE: "vincent/minta"
+              script: |-
+                set -eu
+                if [ -d /gitness ]; then cd /gitness; elif [ -d /harness ]; then cd /harness; fi
+                echo "==> [3/3] frontend"
+                mkdir -p /kaniko/.docker
+                echo "{\"auths\":{\"$REGISTRY_HOST\":{\"username\":\"$REGISTRY_USER\",\"password\":\"$REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+                /kaniko/executor --insecure --skip-tls-verify \
+                  --context=dir://./frontend --dockerfile=frontend/Dockerfile \
+                  --destination=$REGISTRY_HOST/$IMAGE_BASE/frontend:latest
+                echo "==> Terminé : $REGISTRY_HOST/$IMAGE_BASE/{backend,backend-gpu,frontend}:latest"
