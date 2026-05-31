@@ -9,8 +9,11 @@ Endpoints :
   POST /api/upload                          → upload + lancement transcription
   GET  /api/transcribe/{id}                 → statut / résultat
   GET  /api/transcribe/{id}/export          → export TXT | SRT | JSON
+  POST /api/transcribe/{id}/analyze         → déclenche l'analyse IA
   GET  /api/transcripts                     → liste tous les jobs
   DELETE /api/transcribe/{id}              → supprime un job
+  GET  /api/settings                        → config IA/MCP
+  PATCH /api/settings                       → met à jour config IA/MCP
 """
 
 import asyncio
@@ -28,6 +31,7 @@ import aiofiles
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel as PydanticModel
 from pythonjsonlogger import jsonlogger
 
 # ---------------------------------------------------------------------------
@@ -51,8 +55,16 @@ JOB_DIR = Path(os.getenv("JOB_DIR", "/tmp/transcriber/jobs"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/tmp/transcriber/uploads"))
 INITIAL_PROMPT = "Transcription d'une réunion professionnelle en français."
 
+SETTINGS_FILE = Path(os.getenv("SETTINGS_FILE", "/tmp/transcriber/settings.json"))
+
+# Clés IA par défaut (depuis .env — jamais persistées dans settings.json)
+AI_DEFAULT_PROVIDER: str = os.getenv("AI_DEFAULT_PROVIDER", "anthropic")
+ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+
 JOB_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Détection device
@@ -283,7 +295,7 @@ def _run_pipeline(job_id: str, audio_path: Path):
 # App FastAPI
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Meeting Transcriber API", version="0.2.0")
+app = FastAPI(title="Meeting Transcriber API", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -407,6 +419,7 @@ def list_transcripts():
             "speakers": j.get("speakers", []),
             "word_count": j.get("word_count", 0),
             "error": j.get("error"),
+            "analysis_status": j.get("analysis", {}).get("status") if j.get("analysis") else None,
         }
         for j in jobs
     ]
@@ -419,3 +432,102 @@ def delete_job(job_id: str):
         raise HTTPException(status_code=404, detail="Job introuvable")
     p.unlink()
     log.info("job deleted", extra={"job_id": job_id})
+
+
+# ---------------------------------------------------------------------------
+# Settings (config IA + MCP)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SETTINGS: dict = {
+    "mcp_servers": {},
+    "default_provider": AI_DEFAULT_PROVIDER,
+}
+
+
+def _load_settings() -> dict:
+    if SETTINGS_FILE.exists():
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
+            saved = json.load(f)
+        # Merge avec les défauts
+        result = dict(_DEFAULT_SETTINGS)
+        result.update(saved)
+        return result
+    return dict(_DEFAULT_SETTINGS)
+
+
+def _save_settings(settings: dict):
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+@app.get("/api/settings")
+def get_settings():
+    settings = _load_settings()
+    # Injecter les infos sur les providers disponibles (sans exposer les clés)
+    settings["providers_available"] = {
+        "anthropic": bool(ANTHROPIC_API_KEY),
+        "openai": bool(OPENAI_API_KEY),
+    }
+    return settings
+
+
+class SettingsPatch(PydanticModel):
+    mcp_servers: Optional[dict] = None
+    default_provider: Optional[str] = None
+
+
+@app.patch("/api/settings")
+def patch_settings(patch: SettingsPatch):
+    settings = _load_settings()
+    if patch.mcp_servers is not None:
+        settings["mcp_servers"] = patch.mcp_servers
+    if patch.default_provider is not None:
+        if patch.default_provider not in ("anthropic", "openai"):
+            raise HTTPException(status_code=400, detail="Fournisseur inconnu")
+        settings["default_provider"] = patch.default_provider
+    _save_settings(settings)
+    return settings
+
+
+# ---------------------------------------------------------------------------
+# Analyse IA
+# ---------------------------------------------------------------------------
+
+class AnalyzeRequest(PydanticModel):
+    provider: str = "anthropic"
+    api_key: Optional[str] = None
+    mcp_servers: list[str] = []
+
+
+async def _run_analysis_task(job_id: str, provider: str, api_key: str, active_servers: list[str]):
+    from .ai.analyzer import run_analysis
+    job = _load_job(job_id)
+    settings = _load_settings()
+    await run_analysis(
+        job=job,
+        save_job_fn=_save_job,
+        provider_name=provider,
+        api_key=api_key,
+        mcp_servers_config=settings.get("mcp_servers", {}),
+        active_server_names=active_servers,
+    )
+
+
+@app.post("/api/transcribe/{job_id}/analyze", status_code=202)
+async def analyze_job(job_id: str, req: AnalyzeRequest, background_tasks: BackgroundTasks):
+    job = _load_job(job_id)
+    if job["status"] != "completed":
+        raise HTTPException(status_code=409, detail="Transcription non terminée")
+
+    # Résolution de la clé API : body > .env
+    provider = req.provider
+    api_key = req.api_key or (ANTHROPIC_API_KEY if provider == "anthropic" else OPENAI_API_KEY)
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Clé API {provider} absente. Fournissez api_key dans la requête ou configurez la variable d'environnement.",
+        )
+
+    background_tasks.add_task(_run_analysis_task, job_id, provider, api_key, req.mcp_servers)
+    log.info("analysis requested", extra={"job_id": job_id, "provider": provider})
+    return {"job_id": job_id, "analysis_status": "running"}

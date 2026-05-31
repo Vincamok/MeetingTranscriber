@@ -4,7 +4,16 @@
 
 ---
 
-## [0.3.0] — Qualité & édition
+## [0.3.0] — IA + MCP ✅ (livré)
+
+- [x] Analyse IA multi-fournisseurs (Anthropic / OpenAI)
+- [x] Intégration MCP : Linear, GitHub Issues, Notion, Jira, serveurs custom (SSE/stdio)
+- [x] Page paramètres MCP
+- [x] Clés API via UI (localStorage) ou .env
+
+---
+
+## [0.4.0] — Qualité & édition
 
 - [ ] **Édition manuelle** — corriger le texte d'un segment directement dans l'interface
 - [ ] **Renommage des locuteurs** — remplacer "Locuteur A" par un vrai prénom, persisté dans le job
@@ -12,15 +21,15 @@
 
 ---
 
-## [0.4.0] — Intelligence
+## [0.5.0] — Intelligence avancée
 
-- [ ] **Résumé automatique** — appel à l'API Anthropic (Claude) pour générer un résumé structuré (décisions, actions, participants)
 - [ ] **Détection de langue automatique** — laisser Whisper détecter la langue sans forcer `fr`
-- [ ] **Chapitrage automatique** — découper la transcription en thèmes/sections
+- [ ] **Chapitrage automatique** — découper la transcription en thèmes/sections via IA
+- [ ] **Templates de prompt** — choisir le type d'analyse (réunion projet, entretien, support client…)
 
 ---
 
-## [0.5.0] — Stockage & multi-utilisateurs
+## [0.6.0] — Stockage & multi-utilisateurs
 
 - [ ] **Stockage objet MinIO** — archiver les fichiers audio liés à chaque job
 - [ ] **Authentification JWT** — comptes utilisateurs, isolation des jobs par utilisateur

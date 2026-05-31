@@ -5,6 +5,29 @@ Format : [Semantic Versioning](https://semver.org/lang/fr/) — `MAJOR.MINOR.PAT
 
 ---
 
+## [0.3.0] — 2026-05-31
+
+### Ajouté
+- Analyse IA multi-fournisseurs (Anthropic Claude / OpenAI GPT-4o), déclenchée manuellement
+- Intégration MCP : connexion à des serveurs MCP stdio (npx) ou SSE pour pousser tâches et décisions
+- Support natif des serveurs Linear, GitHub Issues, Notion, Jira, et tout serveur MCP custom (ex: Loom)
+- `POST /api/transcribe/{id}/analyze` — lance l'analyse en arrière-plan
+- `GET /api/settings` + `PATCH /api/settings` — configuration IA/MCP persistée dans `/tmp/transcriber/settings.json`
+- `AIAnalysisPanel.tsx` — panneau pliable avec choix provider, clé API, sélection MCP, résultats (résumé / décisions / actions / logs MCP)
+- `SettingsPage.tsx` — page `/settings` pour gérer les serveurs MCP (add/edit/remove, stdio et SSE)
+- Navigation : icône ⚙️ dans la barre vers `/settings` ; lien actif mis en gras
+- Variables d'env : `AI_DEFAULT_PROVIDER`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
+- Badge "✦ IA analysé / en cours / erreur" dans l'historique
+- nodejs + npm ajoutés dans les deux Dockerfiles (requis pour MCP stdio via npx)
+- Clés API stockées dans `localStorage` côté client, jamais persistées sur le serveur
+
+### Modifié
+- `backend/requirements.txt` : + `anthropic`, `openai`, `mcp`
+- `docker-compose.yml` : + variables AI_DEFAULT_PROVIDER, ANTHROPIC_API_KEY, OPENAI_API_KEY
+- Backend version bumped à 0.3.0
+
+---
+
 ## [0.2.0] — 2026-05-31
 
 ### Ajouté

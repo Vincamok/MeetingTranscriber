@@ -11,6 +11,7 @@ interface JobSummary {
   speakers: string[];
   word_count: number;
   error: string | null;
+  analysis_status: "running" | "completed" | "error" | null;
 }
 
 function fmtSec(s: number): string {
@@ -126,6 +127,17 @@ export default function HistoryPage() {
                       <div style={{ fontSize: 12, color: "#A32D2D", marginBottom: 6 }}>{job.error}</div>
                     )}
 
+                    {job.analysis_status && (
+                      <div style={{ marginBottom: 6 }}>
+                        <span style={{
+                          fontSize: 11, padding: "2px 8px", borderRadius: 20, fontWeight: 500,
+                          background: job.analysis_status === "completed" ? "#EEEDFE" : job.analysis_status === "running" ? "#E6F1FB" : "#FCEBEB",
+                          color: job.analysis_status === "completed" ? "#3C3489" : job.analysis_status === "running" ? "#0C447C" : "#A32D2D",
+                        }}>
+                          ✦ IA {job.analysis_status === "completed" ? "analysé" : job.analysis_status === "running" ? "en cours…" : "erreur"}
+                        </span>
+                      </div>
+                    )}
                     <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
                       {[
                         { label: "Date", val: fmtDate(job.created_at) },

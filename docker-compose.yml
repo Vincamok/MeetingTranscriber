@@ -12,6 +12,9 @@ services:
       - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:5173}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - AI_DEFAULT_PROVIDER=${AI_DEFAULT_PROVIDER:-anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     volumes:
       - transcriber_jobs:/tmp/transcriber/jobs
       - whisper_cache:/root/.cache/huggingface
@@ -30,6 +33,9 @@ services:
       - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:5173}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - AI_DEFAULT_PROVIDER=${AI_DEFAULT_PROVIDER:-anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     volumes:
       - transcriber_jobs:/tmp/transcriber/jobs
       - whisper_cache:/root/.cache/huggingface

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import AIAnalysisPanel from "./AIAnalysisPanel";
 
 const SPEAKER_COLORS = [
   { bg: "#E6F1FB", text: "#0C447C" },
@@ -24,6 +25,17 @@ interface Utterance {
   words: Word[];
 }
 
+interface Analysis {
+  status: "running" | "completed" | "error";
+  provider: string;
+  summary: string;
+  decisions: string[];
+  actions: { text: string; assignee: string | null; due: string | null }[];
+  mcp_results: { server: string; action: string; result: string }[];
+  error: string | null;
+  created_at: string | null;
+}
+
 interface Job {
   id: string;
   status: "processing" | "completed" | "error";
@@ -35,6 +47,7 @@ interface Job {
   error?: string | null;
   queue_position?: number;
   message?: string;
+  analysis?: Analysis | null;
 }
 
 function fmtMs(ms: number): string {
@@ -393,6 +406,15 @@ export default function MeetingTranscriber() {
           </div>
         )}
       </div>
+
+      {/* Analyse IA */}
+      {job?.status === "completed" && (
+        <AIAnalysisPanel
+          jobId={job.id}
+          existingAnalysis={job.analysis ?? null}
+          onAnalysisUpdate={(analysis) => setJob((j) => j ? { ...j, analysis } : j)}
+        />
+      )}
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
     </div>
