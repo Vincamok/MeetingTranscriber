@@ -124,6 +124,5 @@ curl -X DELETE http://localhost:8000/api/transcribe/<job_id>
 
 ## Pistes d'évolution
 
-- Résumé automatique via l'API Anthropic (Claude)
-- Authentification JWT pour multi-utilisateurs
-- Stockage objet (MinIO) pour archiver les fichiers audio
+Voir [ROADMAP.md](./ROADMAP.md) pour le détail des évolutions planifiées.
+Voir [CHANGELOG.md](./CHANGELOG.md) pour l'historique des versions.
