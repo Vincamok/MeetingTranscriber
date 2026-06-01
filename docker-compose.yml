@@ -60,13 +60,25 @@ services:
               capabilities: [gpu]
 
   # ── Frontend ─────────────────────────────────────────────────────────────────
-  frontend:
+  # Profils cpu + gpu : le frontend démarre avec le backend actif.
+  # depends_on liste les deux backends mais seul celui du profil actif existera.
+  frontend-cpu:
     build: ./frontend
+    profiles: [cpu]
     restart: unless-stopped
     ports:
       - "3000:80"
     depends_on:
       - backend
+
+  frontend-gpu:
+    build: ./frontend
+    profiles: [gpu]
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend-gpu
 
 volumes:
   minta_data:
