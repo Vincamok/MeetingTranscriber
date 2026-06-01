@@ -1,0 +1,54 @@
+# Synchronise GitHub → Harness Code (Gitness).
+# API Harness Code : http://192.168.200.45:3000/swagger  (REST : /api/v1)
+# Git (ce que clonent les pipelines CI) : http://192.168.200.45:3000/git/vincent/MeetingTranscriber
+# Exécuter ce pipeline avant build/security (manuel, cron ou webhook GitHub).
+#
+# Secrets requis :
+#   harness_user  : utilisateur Harness Code
+#   harness_token : token Harness Code
+#   github_token  : Personal Access Token GitHub (scope : repo)
+kind: pipeline
+spec:
+  stages:
+    - name: sync-github-to-harness
+      type: ci
+      spec:
+        cloneCodebase: false
+        steps:
+          - name: mirror-repository
+            type: run
+            spec:
+              container: alpine/git
+              shell: Bash
+              envs:
+                HARNESS_GIT_HOST: "http://192.168.200.45:3000"
+                HARNESS_GIT_PATH: "git/vincent/MeetingTranscriber"
+                HARNESS_USER: ${{ secrets.get('harness_user') }}
+                HARNESS_TOKEN: ${{ secrets.get('harness_token') }}
+                GITHUB_TOKEN: ${{ secrets.get('github_token') }}
+              script: |
+                set -euo pipefail
+
+                git config --global user.name "Harness Sync Bot"
+                git config --global user.email "sync@harness.local"
+
+                cd /tmp
+                rm -rf repo-mirror
+
+                echo "==> Clone miroir depuis GitHub (toutes les refs)..."
+                git clone --mirror \
+                  "https://x-access-token:${GITHUB_TOKEN}@github.com/vincamok/MeetingTranscriber.git" \
+                  repo-mirror
+                cd repo-mirror
+
+                HOST="${HARNESS_GIT_HOST#http://}"
+                HARNESS_PUSH_URL="http://${HARNESS_USER}:${HARNESS_TOKEN}@${HOST}/${HARNESS_GIT_PATH}.git"
+                git remote add harness-push "${HARNESS_PUSH_URL}"
+
+                echo "==> Push miroir vers ${HARNESS_GIT_HOST}/${HARNESS_GIT_PATH} ..."
+                git push --prune harness-push \
+                  +refs/heads/*:refs/heads/* \
+                  +refs/tags/*:refs/tags/*
+
+                echo "==> Branches sur Harness Code :"
+                git ls-remote harness-push 'refs/heads/*' | head -20
