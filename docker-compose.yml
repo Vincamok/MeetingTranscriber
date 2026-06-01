@@ -25,6 +25,12 @@ services:
       - whisper_cache:/root/.cache/huggingface
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   # ── Backend GPU ─────────────────────────────────────────────────────────────
   backend-gpu:
@@ -51,6 +57,12 @@ services:
       - whisper_cache:/root/.cache/huggingface
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     deploy:
       resources:
         reservations:
@@ -69,7 +81,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   frontend-gpu:
     build: ./frontend
@@ -78,7 +91,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - backend-gpu
+      backend-gpu:
+        condition: service_healthy
 
 volumes:
   minta_data:
