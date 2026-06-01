@@ -630,7 +630,7 @@ async def upload_audio(
     _save_job(job)
 
     background_tasks.add_task(_run_pipeline, job_id, raw_path, language)
-    log.info("job created", extra={"job_id": job_id, "filename": file.filename, "language": language})
+    log.info("job created", extra={"job_id": job_id, "original_filename": file.filename, "language": language})
     return {
         "id": job_id,
         "status": "processing",
