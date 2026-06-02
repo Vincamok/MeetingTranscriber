@@ -1059,7 +1059,10 @@ async def ws_transcribe(
                     })
                 except Exception as exc:
                     log.warning("ws_transcribe chunk error", extra={"error": str(exc)})
-                    await websocket.send_json({"type": "error", "message": str(exc)})
+                    try:
+                        await websocket.send_json({"type": "error", "message": str(exc)})
+                    except Exception:
+                        break
 
             # Message texte (commande)
             elif message.get("text"):
