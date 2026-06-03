@@ -348,12 +348,12 @@ def _run_pipeline(job_id: str, raw_path: Path, language: str):
 
         log.info("pipeline start", extra={"job_id": job_id})
 
-        # Extraction audio si vidéo
-        if raw_path.suffix.lower() in VIDEO_EXTENSIONS:
+        # Conversion en WAV pour Whisper (ffmpeg gère tous les formats)
+        if raw_path.suffix.lower() != ".wav":
             wav_path = UPLOAD_DIR / f"{job_id}.wav"
             audio_path = _extract_audio(raw_path, wav_path)
             raw_path.unlink(missing_ok=True)
-            log.info("video extracted", extra={"job_id": job_id})
+            log.info("audio converted", extra={"job_id": job_id})
 
         # Copie vers AUDIO_DIR pour le player
         audio_dest = AUDIO_DIR / f"{job_id}{audio_path.suffix}"
