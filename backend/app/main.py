@@ -14,7 +14,9 @@ Endpoints :
   POST /api/transcribe/{id}/analyze         → déclenche l'analyse IA
   PATCH /api/transcribe/{id}/speakers       → renommer les locuteurs
   PATCH /api/transcribe/{id}/segments       → éditer le texte / commentaires des segments
+  PATCH /api/transcribe/{id}/title          → renommer la réunion
   POST /api/transcribe/{id}/share           → créer un lien de partage
+  POST /api/transcribe/{id}/chat            → chat IA sur la transcription
   GET  /api/share/{token}                   → vue publique d'une transcription
   GET  /api/transcripts                     → liste tous les jobs
   DELETE /api/transcribe/{id}              → supprime un job + audio
@@ -617,9 +619,11 @@ async def upload_audio(
         await f.write(content)
 
     running = _running_jobs_count()
+    stem = Path(file.filename or "Réunion").stem
     job = {
         "id": job_id,
         "filename": file.filename,
+        "title": stem,
         "language": language,
         "status": "processing",
         "created_at": datetime.utcnow().isoformat(),
@@ -839,6 +843,88 @@ def update_tags(job_id: str, body: TagsUpdate, _: str = Depends(require_auth)):
     job["tags"] = [t.strip() for t in body.tags if t.strip()]
     _save_job(job)
     return {"tags": job["tags"]}
+
+
+class TitleUpdate(BaseModel):
+    title: str
+
+
+@app.patch("/api/transcribe/{job_id}/title")
+def update_title(job_id: str, body: TitleUpdate, _: str = Depends(require_auth)):
+    job = _load_job(job_id)
+    job["title"] = body.title.strip() or job.get("filename", job_id)
+    _save_job(job)
+    return {"title": job["title"]}
+
+
+class ChatMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[ChatMessage] = []
+    provider: str = "anthropic"
+    api_key: Optional[str] = None
+
+
+@app.post("/api/transcribe/{job_id}/chat")
+async def chat_with_transcript(job_id: str, req: ChatRequest, _: str = Depends(require_auth)):
+    job = _load_job(job_id)
+    if job["status"] != "completed":
+        raise HTTPException(status_code=409, detail="Transcription non terminée")
+
+    provider = req.provider
+    api_key = req.api_key or (ANTHROPIC_API_KEY if provider == "anthropic" else OPENAI_API_KEY)
+    if not api_key:
+        raise HTTPException(status_code=503, detail=f"Clé API {provider} absente.")
+
+    speaker_names: dict = job.get("speaker_names", {})
+    utterances: list = job.get("utterances", [])
+    transcript_lines = []
+    for u in utterances:
+        name = speaker_names.get(u["speaker"], u["speaker"])
+        transcript_lines.append(f"[{name}] {u['text']}")
+    transcript = "\n".join(transcript_lines)
+    title = job.get("title") or job.get("filename", "réunion")
+
+    system = (
+        f"Tu es un assistant qui aide à analyser une réunion intitulée « {title} ».\n"
+        f"Voici la transcription complète :\n\n{transcript}\n\n"
+        "Réponds de façon concise et précise en te basant uniquement sur cette transcription."
+    )
+
+    try:
+        if provider == "anthropic":
+            import anthropic as _anthropic
+            client = _anthropic.Anthropic(api_key=api_key)
+            messages = [{"role": m.role, "content": m.content} for m in req.history]
+            messages.append({"role": "user", "content": req.message})
+            resp = client.messages.create(
+                model="claude-opus-4-8",
+                max_tokens=1024,
+                system=system,
+                messages=messages,
+            )
+            reply = resp.content[0].text
+        else:
+            import openai as _openai
+            client = _openai.OpenAI(api_key=api_key)
+            messages = [{"role": "system", "content": system}]
+            for m in req.history:
+                messages.append({"role": m.role, "content": m.content})
+            messages.append({"role": "user", "content": req.message})
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=1024,
+                messages=messages,
+            )
+            reply = resp.choices[0].message.content or ""
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return {"reply": reply}
 
 
 @app.delete("/api/transcribe/{job_id}", status_code=204)

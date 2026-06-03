@@ -5,6 +5,7 @@ import { apiFetch } from "./api";
 interface JobSummary {
   id: string;
   filename: string | null;
+  title?: string;
   status: "processing" | "completed" | "error";
   created_at: string | null;
   completed_at: string | null;
@@ -207,7 +208,7 @@ export default function HistoryPage() {
                     {/* Titre + statut */}
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
                       <span style={{ fontSize: 14, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {job.filename ?? "Enregistrement"}
+                        {job.title || job.filename || "Enregistrement"}
                       </span>
                       <span style={{ fontSize: 11, fontWeight: 500, padding: "2px 8px", borderRadius: 20, background: st.bg, color: st.color, flexShrink: 0 }}>
                         {st.label}

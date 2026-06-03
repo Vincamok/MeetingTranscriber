@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, MutableRefObject } from "react";
 import AIAnalysisPanel from "./AIAnalysisPanel";
+import MeetingChat from "./MeetingChat";
 import { apiFetch } from "./api";
 
 const SPEAKER_COLORS = [
@@ -42,6 +43,7 @@ interface Job {
   id: string; status: "processing" | "completed" | "error";
   utterances: Utterance[]; text: string; speakers: string[];
   speaker_names: Record<string, string>;
+  title?: string; filename?: string;
   duration_ms: number; word_count: number; language?: string;
   error?: string | null; queue_position?: number; message?: string;
   has_audio?: boolean; share_token?: string | null;
@@ -57,7 +59,13 @@ function fmtSec(s: number): string {
   return m > 0 ? `${m}m${String(sec).padStart(2, "0")}s` : `${s}s`;
 }
 
-export default function MeetingTranscriber() {
+interface Props {
+  onRecordingChange?: (v: boolean) => void;
+  onAnalyzingChange?: (v: boolean) => void;
+  resetRef?: MutableRefObject<(() => void) | null>;
+}
+
+export default function MeetingTranscriber({ onRecordingChange, onAnalyzingChange, resetRef }: Props = {}) {
   const [isRecording, setIsRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [hasAudio, setHasAudio] = useState(false);
@@ -81,6 +89,8 @@ export default function MeetingTranscriber() {
   const [liveUtterances, setLiveUtterances] = useState<Utterance[]>([]);
   const [liveLanguage, setLiveLanguage] = useState<string>("");
   const [wsConnected, setWsConnected] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleValue, setTitleValue] = useState("");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -336,6 +346,19 @@ export default function MeetingTranscriber() {
     setCommentingSegment(null);
   };
 
+  const saveTitle = async () => {
+    if (!job) return;
+    const t = titleValue.trim();
+    if (!t) { setEditingTitle(false); return; }
+    await apiFetch(`/api/transcribe/${job.id}/title`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: t }),
+    });
+    setJob({ ...job, title: t });
+    setEditingTitle(false);
+  };
+
   const createShare = async () => {
     if (!job) return;
     setSharing(true);
@@ -346,6 +369,23 @@ export default function MeetingTranscriber() {
     }
     setSharing(false);
   };
+
+  // Propager isRecording / isAnalyzing vers App
+  useEffect(() => { onRecordingChange?.(isRecording); }, [isRecording, onRecordingChange]);
+  useEffect(() => { onAnalyzingChange?.(analyzing); }, [analyzing, onAnalyzingChange]);
+
+  // Exposer la fonction reset pour "Nouvelle transcription"
+  useEffect(() => {
+    if (!resetRef) return;
+    resetRef.current = () => {
+      stopRecording();
+      if (pollRef.current) clearInterval(pollRef.current);
+      setJob(null); setError(""); setAnalyzing(false); setProgress(0);
+      setProgressLabel(""); setQueueMessage(""); setHasAudio(false);
+      setUploadedFileName(""); audioBlobRef.current = null; uploadedFileRef.current = null;
+      setLiveUtterances([]); setLiveLanguage("");
+    };
+  });
 
   useEffect(() => () => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -368,9 +408,45 @@ export default function MeetingTranscriber() {
 
   return (
     <div style={{ padding: "1.5rem 0", fontFamily: "system-ui, sans-serif", maxWidth: 680 }}>
-      <div style={{ marginBottom: "1.5rem" }}>
-        <h1 style={{ fontSize: 20, fontWeight: 500, margin: 0 }}>🎙 Minta</h1>
-        <p style={{ fontSize: 13, color: "#666", marginTop: 4 }}>Transcription locale · faster-whisper + pyannote · 100% auto-hébergé</p>
+      <div style={{ marginBottom: "1.5rem", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          {job ? (
+            editingTitle ? (
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input value={titleValue} onChange={(e) => setTitleValue(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") saveTitle(); if (e.key === "Escape") setEditingTitle(false); }}
+                  autoFocus
+                  style={{ fontSize: 18, fontWeight: 500, padding: "2px 8px", borderRadius: 6, border: "1px solid #bbb", width: 280 }} />
+                <button onClick={saveTitle}
+                  style={{ fontSize: 12, padding: "4px 10px", borderRadius: 6, border: "none", background: "#333", color: "#fff", cursor: "pointer" }}>✓</button>
+                <button onClick={() => setEditingTitle(false)}
+                  style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "0.5px solid #bbb", background: "transparent", cursor: "pointer" }}>✕</button>
+              </div>
+            ) : (
+              <h1 onClick={() => { setEditingTitle(true); setTitleValue(job.title || job.filename || "Réunion"); }}
+                title="Cliquer pour renommer"
+                style={{ fontSize: 20, fontWeight: 500, margin: 0, cursor: "text", display: "flex", alignItems: "center", gap: 8 }}>
+                {job.title || job.filename || "Réunion"}
+                <span style={{ fontSize: 12, color: "#ccc" }}>✏</span>
+              </h1>
+            )
+          ) : (
+            <h1 style={{ fontSize: 20, fontWeight: 500, margin: 0 }}>🎙 Minta</h1>
+          )}
+          <p style={{ fontSize: 13, color: "#666", marginTop: 4 }}>Transcription locale · faster-whisper + pyannote · 100% auto-hébergé</p>
+        </div>
+        {job && (
+          <button onClick={() => {
+            if (pollRef.current) clearInterval(pollRef.current);
+            setJob(null); setError(""); setAnalyzing(false); setProgress(0);
+            setProgressLabel(""); setQueueMessage(""); setHasAudio(false);
+            setUploadedFileName(""); audioBlobRef.current = null; uploadedFileRef.current = null;
+            setLiveUtterances([]); setLiveLanguage("");
+          }}
+            style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, border: "0.5px solid #ddd", background: "transparent", cursor: "pointer", color: "#666", whiteSpace: "nowrap", flexShrink: 0 }}>
+            + Nouvelle transcription
+          </button>
+        )}
       </div>
 
       {/* Recorder */}
@@ -642,6 +718,9 @@ export default function MeetingTranscriber() {
           }}
         />
       )}
+
+      {/* Chat IA */}
+      {job?.status === "completed" && <MeetingChat jobId={job.id} />}
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
     </div>
