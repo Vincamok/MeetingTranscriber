@@ -256,8 +256,10 @@ def _srt_ts(ms: int) -> str:
 
 def _extract_audio(src: Path, dst: Path) -> Path:
     """Extrait la piste audio d'un fichier vidéo en WAV via ffmpeg."""
+    # Pour les WebM issus de MediaRecorder, forcer le format en entrée
+    input_args = ["-f", "webm"] if src.suffix.lower() == ".webm" else []
     result = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(src), "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", str(dst)],
+        ["ffmpeg", "-y"] + input_args + ["-i", str(src), "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", str(dst)],
         capture_output=True, timeout=300,
     )
     if result.returncode != 0:
