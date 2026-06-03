@@ -335,7 +335,7 @@ def _trigger_auto_analyze(job: dict, settings: dict):
 # Pipeline transcription
 # ---------------------------------------------------------------------------
 
-def _run_pipeline(job_id: str, raw_path: Path, language: str):
+def _run_pipeline(job_id: str, raw_path: Path, language: str, num_speakers: int = 0):
     job = _load_job(job_id)
     audio_path = raw_path
 
@@ -377,33 +377,67 @@ def _run_pipeline(job_id: str, raw_path: Path, language: str):
         log.info("whisper done", extra={"job_id": job_id, "segments": len(segments), "lang": detected_language})
 
         # Pyannote (optionnel)
-        utterances = []
+        raw_utterances = []
         if _diarize_pipeline:
-            diarization = _diarize_pipeline(str(audio_path))
+            diarize_kwargs: dict = {}
+            if num_speakers and num_speakers > 0:
+                diarize_kwargs["num_speakers"] = num_speakers
+            diarization = _diarize_pipeline(str(audio_path), **diarize_kwargs)
             speaker_turns = [
                 (turn.start, turn.end, speaker)
                 for turn, _, speaker in diarization.itertracks(yield_label=True)
             ]
             for seg in segments:
-                best_speaker, best_overlap = "SPEAKER_00", 0.0
+                # Cherche le tour avec le maximum de chevauchement
+                best_speaker, best_overlap = None, 0.0
                 for t_start, t_end, spk in speaker_turns:
                     overlap = max(0.0, min(seg.end, t_end) - max(seg.start, t_start))
                     if overlap > best_overlap:
                         best_overlap, best_speaker = overlap, spk
-                utterances.append({
-                    "speaker": best_speaker,
-                    "start": _ms(seg.start), "end": _ms(seg.end),
+                # Fallback : si aucun chevauchement, prendre le tour le plus proche
+                if best_speaker is None and speaker_turns:
+                    seg_mid = (seg.start + seg.end) / 2
+                    best_speaker = min(
+                        speaker_turns,
+                        key=lambda t: min(abs(seg_mid - t[0]), abs(seg_mid - t[1]))
+                    )[2]
+                raw_utterances.append({
+                    "speaker": best_speaker or "SPEAKER_00",
+                    "start": seg.start, "end": seg.end,
                     "text": seg.text.strip(),
-                    "words": [{"text": w.word, "start": _ms(w.start), "end": _ms(w.end)} for w in (seg.words or [])],
+                    "words": seg.words or [],
                 })
         else:
             for seg in segments:
-                utterances.append({
+                raw_utterances.append({
                     "speaker": "SPEAKER_00",
-                    "start": _ms(seg.start), "end": _ms(seg.end),
+                    "start": seg.start, "end": seg.end,
                     "text": seg.text.strip(),
-                    "words": [{"text": w.word, "start": _ms(w.start), "end": _ms(w.end)} for w in (seg.words or [])],
+                    "words": seg.words or [],
                 })
+
+        # Fusion des segments consécutifs du même locuteur (gap ≤ 1.5s)
+        MERGE_GAP = 1.5
+        merged: list[dict] = []
+        for u in raw_utterances:
+            if (merged and merged[-1]["speaker"] == u["speaker"]
+                    and u["start"] - merged[-1]["end"] <= MERGE_GAP):
+                prev = merged[-1]
+                prev["text"] = prev["text"].rstrip() + " " + u["text"].lstrip()
+                prev["end"] = u["end"]
+                prev["words"].extend(u["words"])
+            else:
+                merged.append({**u})
+
+        utterances = [
+            {
+                "speaker": u["speaker"],
+                "start": _ms(u["start"]), "end": _ms(u["end"]),
+                "text": u["text"],
+                "words": [{"text": w.word, "start": _ms(w.start), "end": _ms(w.end)} for w in u["words"]],
+            }
+            for u in merged
+        ]
 
         speakers = list(dict.fromkeys(u["speaker"] for u in utterances))
         job.update({
@@ -607,6 +641,7 @@ async def upload_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     language: str = Form("auto"),
+    num_speakers: int = Form(0),
     _: str = Depends(require_auth),
 ):
     """Reçoit un fichier audio ou vidéo, crée un job et lance le pipeline."""
@@ -641,8 +676,8 @@ async def upload_audio(
     }
     _save_job(job)
 
-    background_tasks.add_task(_run_pipeline, job_id, raw_path, language)
-    log.info("job created", extra={"job_id": job_id, "original_filename": file.filename, "language": language})
+    background_tasks.add_task(_run_pipeline, job_id, raw_path, language, num_speakers)
+    log.info("job created", extra={"job_id": job_id, "original_filename": file.filename, "language": language, "num_speakers": num_speakers})
     return {
         "id": job_id,
         "status": "processing",

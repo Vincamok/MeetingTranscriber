@@ -71,6 +71,7 @@ export default function MeetingTranscriber({ onRecordingChange, onAnalyzingChang
   const [hasAudio, setHasAudio] = useState(false);
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [language, setLanguage] = useState("auto");
+  const [numSpeakers, setNumSpeakers] = useState(0);
   const [status, setStatus] = useState("Prêt à enregistrer");
   const [progress, setProgress] = useState(0);
   const [progressLabel, setProgressLabel] = useState("");
@@ -276,6 +277,7 @@ export default function MeetingTranscriber({ onRecordingChange, onAnalyzingChang
       const form = new FormData();
       form.append("file", fileToSend, uploadedFileRef.current?.name ?? "recording.webm");
       form.append("language", language);
+      form.append("num_speakers", String(numSpeakers));
       const resp = await apiFetch("/api/upload", { method: "POST", body: form });
       if (!resp.ok) {
         const d = await resp.json().catch(() => ({ detail: resp.statusText }));
@@ -466,6 +468,12 @@ export default function MeetingTranscriber({ onRecordingChange, onAnalyzingChang
           <select value={language} onChange={(e) => setLanguage(e.target.value)}
             style={{ marginLeft: "auto", padding: "7px 10px", fontSize: 12, borderRadius: 8, border: "0.5px solid #ddd", background: "#fafafa" }}>
             {LANGUAGES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+          </select>
+          <select value={numSpeakers} onChange={(e) => setNumSpeakers(Number(e.target.value))}
+            title="Nombre de locuteurs (améliore la diarisation)"
+            style={{ padding: "7px 10px", fontSize: 12, borderRadius: 8, border: "0.5px solid #ddd", background: "#fafafa" }}>
+            <option value={0}>👥 Auto</option>
+            {[2,3,4,5,6,7,8].map((n) => <option key={n} value={n}>{n} locuteurs</option>)}
           </select>
           <button onClick={analyzeAudio} disabled={!hasAudio || analyzing}
             style={{ padding: "8px 16px", fontSize: 13, borderRadius: 8, border: "0.5px solid #E24B4A", color: "#A32D2D", background: "transparent", cursor: (!hasAudio || analyzing) ? "not-allowed" : "pointer", opacity: (!hasAudio || analyzing) ? 0.4 : 1 }}>
