@@ -880,7 +880,7 @@ def update_tags(job_id: str, body: TagsUpdate, _: str = Depends(require_auth)):
     return {"tags": job["tags"]}
 
 
-class TitleUpdate(BaseModel):
+class TitleUpdate(PydanticModel):
     title: str
 
 
@@ -892,12 +892,12 @@ def update_title(job_id: str, body: TitleUpdate, _: str = Depends(require_auth))
     return {"title": job["title"]}
 
 
-class ChatMessage(BaseModel):
+class ChatMessage(PydanticModel):
     role: str  # "user" | "assistant"
     content: str
 
 
-class ChatRequest(BaseModel):
+class ChatRequest(PydanticModel):
     message: str
     history: list[ChatMessage] = []
     provider: str = "anthropic"
